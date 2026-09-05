@@ -6,6 +6,7 @@ import {
   mapBackendObservation,
   mapBackendMetrics,
   buildReviewPayload,
+  buildObservationPayload,
   deriveReviewQueue,
   reviewUiStatus,
   shouldUseLocalPreviewMutations,
@@ -20,6 +21,25 @@ test('routes match authoritative Work Intelligence V2 API', () => {
   assert.equal(routes.workItem('wi_123'), '/api/v1/work-items/wi_123?tenant_id=tenant-a');
   assert.equal(routes.review('wi_123'), '/api/v1/work-items/wi_123/review?tenant_id=tenant-a');
   assert.equal(routes.metrics, '/api/v1/metrics');
+});
+
+test('observation ingest payload binds frontend source data to configured tenant', () => {
+  assert.deepEqual(buildObservationPayload('tenant-a', {
+    source: 'email',
+    text: 'Please send confirmation',
+    external_id: 'gmail:msg-1',
+    actor: 'customer@example.com',
+    priority_hint: 'high',
+    metadata: { provider: 'gmail' },
+  }), {
+    tenant_id: 'tenant-a',
+    source: 'email',
+    text: 'Please send confirmation',
+    external_id: 'gmail:msg-1',
+    actor: 'customer@example.com',
+    priority_hint: 'high',
+    metadata: { provider: 'gmail' },
+  });
 });
 
 test('backend OPEN work item maps to reviewable UI item without invented execution state', () => {
