@@ -40,7 +40,10 @@ app.use('/api', createProxyMiddleware({
 }));
 
 app.use(express.static(path.join(__dirname, 'dist')));
-app.get('*', (_req, res) => {
+
+// Express 5 removed the old bare "*" route semantics. A path-less final
+// middleware is an unambiguous catch-all for client-side SPA routes.
+app.use((_req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
