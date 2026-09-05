@@ -1,83 +1,65 @@
 import { KeepNoteItem } from '../../runtime/runtimeTypes';
+import { isExplicitPreviewMode } from '../../runtime/runtimeMode';
 import { loadPersistedState, savePersistedState, STORAGE_KEYS } from '../../runtime/persistence';
 
-const defaultKeepNotes: KeepNoteItem[] = [
+const previewNotes: KeepNoteItem[] = [
   {
-    id: 'note_01',
-    title: 'Release Readiness Checklist (Sprint 34)',
-    content: 'Ensure all critical security and publishing gates are verified before Friday 17:00 UTC.',
+    id: 'preview_keep_1',
+    title: 'Preview checklist',
+    content: 'Explicit preview note. Google Keep is not connected in live mode.',
     isChecklist: true,
     checklistItems: [
-      { id: 'chk_1', text: 'KMS Key rotation signoff approved in Review Queue', done: false },
-      { id: 'chk_2', text: 'Canary health metric latency validated below 50ms', done: true },
-      { id: 'chk_3', text: 'Webhook schema exported to Acme Corp', done: true },
-      { id: 'chk_4', text: 'Spanner replica sync lag alert silenced after patch', done: true }
+      { id: 'preview_item_1', text: 'Preview-only checklist item', done: false },
     ],
     color: 'amber',
     isPinned: true,
-    labels: ['Operations', 'Sprint 34', 'Security'],
-    updatedAt: new Date(Date.now() - 1000 * 60 * 20).toISOString(),
-    linkedWorkItemId: 'WI-1024',
+    labels: ['Preview'],
+    updatedAt: new Date().toISOString(),
   },
-  {
-    id: 'note_02',
-    title: 'Observation Rules to Calibrate',
-    content: 'Notes from Alex: Reduce false-positive rate on Slack channel #infra-chatter. High noise on casual bot mentions. Need policy threshold adjusted to 0.88 confidence minimum.',
-    isChecklist: false,
-    checklistItems: [],
-    color: 'cyan',
-    isPinned: true,
-    labels: ['Intelligence', 'Model Calibration'],
-    updatedAt: new Date(Date.now() - 1000 * 60 * 180).toISOString(),
-  },
-  {
-    id: 'note_03',
-    title: 'Customer Feedback: Acme Webhooks',
-    content: 'Client requested webhook signature header verification examples in Python and Go. Need to attach code snippets to Docs spec.',
-    isChecklist: false,
-    checklistItems: [],
-    color: 'purple',
-    isPinned: false,
-    labels: ['Customer', 'Acme'],
-    updatedAt: new Date(Date.now() - 1000 * 60 * 60 * 12).toISOString(),
-    linkedWorkItemId: 'WI-1025',
-  }
 ];
 
-let localKeepNotes: KeepNoteItem[] = loadPersistedState(STORAGE_KEYS.KEEP_NOTES, defaultKeepNotes);
+let localNotes: KeepNoteItem[] = loadPersistedState(STORAGE_KEYS.KEEP_NOTES, previewNotes);
 
-const persistNotes = () => {
-  savePersistedState(STORAGE_KEYS.KEEP_NOTES, localKeepNotes);
-};
+function assertPreview(): void {
+  if (!isExplicitPreviewMode()) {
+    throw new Error('Google Keep is not available as a live provider. Open with ?preview=1 to use preview data.');
+  }
+}
+
+function persistPreviewNotes() {
+  savePersistedState(STORAGE_KEYS.KEEP_NOTES, localNotes);
+}
 
 export const fetchKeepNotes = async (): Promise<KeepNoteItem[]> => {
-  return [...localKeepNotes];
+  assertPreview();
+  return [...localNotes];
 };
 
 export const createKeepNote = async (note: Omit<KeepNoteItem, 'id' | 'updatedAt'>): Promise<KeepNoteItem> => {
-  const newNote: KeepNoteItem = {
+  assertPreview();
+  const item: KeepNoteItem = {
     ...note,
-    id: `keep_${Date.now()}`,
+    id: `preview_keep_${Date.now()}`,
     updatedAt: new Date().toISOString(),
   };
-  localKeepNotes.unshift(newNote);
-  persistNotes();
-  return newNote;
+  localNotes.unshift(item);
+  persistPreviewNotes();
+  return item;
 };
 
 export const toggleChecklistItem = async (noteId: string, itemId: string): Promise<void> => {
-  const note = localKeepNotes.find(n => n.id === noteId);
-  if (note) {
-    const item = note.checklistItems.find(i => i.id === itemId);
-    if (item) {
-      item.done = !item.done;
-      note.updatedAt = new Date().toISOString();
-      persistNotes();
-    }
-  }
+  assertPreview();
+  const note = localNotes.find(candidate => candidate.id === noteId);
+  if (!note) throw new Error('Preview Keep note not found.');
+  const item = note.checklistItems.find(candidate => candidate.id === itemId);
+  if (!item) throw new Error('Preview checklist item not found.');
+  item.done = !item.done;
+  note.updatedAt = new Date().toISOString();
+  persistPreviewNotes();
 };
 
 export const deleteKeepNote = async (noteId: string): Promise<void> => {
-  localKeepNotes = localKeepNotes.filter(n => n.id !== noteId);
-  persistNotes();
+  assertPreview();
+  localNotes = localNotes.filter(note => note.id !== noteId);
+  persistPreviewNotes();
 };

@@ -1,112 +1,115 @@
 import { SheetDataset, SheetRowData } from '../../runtime/runtimeTypes';
+import { isExplicitPreviewMode } from '../../runtime/runtimeMode';
 import { getAccessToken } from './googleAuth';
 import { loadPersistedState, savePersistedState, STORAGE_KEYS } from '../../runtime/persistence';
 
-const defaultSheets: SheetDataset[] = [
+const previewSheets: SheetDataset[] = [
   {
-    spreadsheetId: 'sheet_core_metrics_01',
-    title: 'Core System Health & Latency Metrics',
-    sheetName: 'Latency_SLO',
-    columns: ['Service', 'P50_ms', 'P99_ms', 'ErrorRate_Pct', 'SLA_Status', 'LastAudited'],
-    rows: [
-      { Service: 'inference-mesh-gateway', P50_ms: 42, P99_ms: 180, ErrorRate_Pct: '0.01%', SLA_Status: 'HEALTHY', LastAudited: '2026-09-05 09:12' },
-      { Service: 'postgres-spanner-bridge', P50_ms: 18, P99_ms: 65, ErrorRate_Pct: '0.00%', SLA_Status: 'HEALTHY', LastAudited: '2026-09-05 09:14' },
-      { Service: 'vector-evidence-indexer', P50_ms: 88, P99_ms: 340, ErrorRate_Pct: '0.04%', SLA_Status: 'MONITORING', LastAudited: '2026-09-05 08:55' },
-      { Service: 'renos-work-dispatcher', P50_ms: 55, P99_ms: 210, ErrorRate_Pct: '0.00%', SLA_Status: 'HEALTHY', LastAudited: '2026-09-05 09:15' },
-      { Service: 'audit-provenance-signer', P50_ms: 24, P99_ms: 92, ErrorRate_Pct: '0.00%', SLA_Status: 'HEALTHY', LastAudited: '2026-09-05 09:10' }
-    ],
-    updatedAt: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
+    spreadsheetId: 'preview_sheet_1',
+    title: 'Preview operational metrics',
+    sheetName: 'Preview',
+    columns: ['Metric', 'Value'],
+    rows: [{ Metric: 'preview_only', Value: 'true' }],
+    updatedAt: new Date().toISOString(),
   },
-  {
-    spreadsheetId: 'sheet_work_backlog_02',
-    title: 'Aftergraph Autonomous Backlog Export',
-    sheetName: 'Discovered_Work',
-    columns: ['ID', 'Title', 'Priority', 'Status', 'Confidence', 'InferredBy'],
-    rows: [
-      { ID: 'WI-1024', Title: 'Approve Primary Root Key Rotation SLA', Priority: 'urgent', Status: 'needs_review', Confidence: '94%', InferredBy: 'Security Bot' },
-      { ID: 'WI-1025', Title: 'Document Webhook Schemas & Retry Policy', Priority: 'high', Status: 'in_progress', Confidence: '89%', InferredBy: 'Email Scanner' },
-      { ID: 'WI-1026', Title: 'Database replica synchronization lag mitigation', Priority: 'high', Status: 'approved', Confidence: '96%', InferredBy: 'Telemetry Engine' },
-      { ID: 'WI-1027', Title: 'Kubelet node drain script timeout fix', Priority: 'medium', Status: 'completed', Confidence: '91%', InferredBy: 'Git Hook' },
-    ],
-    updatedAt: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
-  }
 ];
 
-let localSheets: SheetDataset[] = loadPersistedState(STORAGE_KEYS.SHEETS_DATASETS, defaultSheets);
+let localSheets: SheetDataset[] = loadPersistedState(STORAGE_KEYS.SHEETS_DATASETS, previewSheets);
 
-const persistSheets = () => {
+function persistPreviewSheets() {
   savePersistedState(STORAGE_KEYS.SHEETS_DATASETS, localSheets);
-};
+}
+
+async function requireToken(): Promise<string> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Google Sheets authorization required.');
+  return token;
+}
+
+async function resolveSpreadsheetId(token: string, spreadsheetId?: string): Promise<string> {
+  if (spreadsheetId) return spreadsheetId;
+  const params = new URLSearchParams({
+    pageSize: '1',
+    orderBy: 'modifiedTime desc',
+    q: "mimeType = 'application/vnd.google-apps.spreadsheet' and trashed = false",
+    fields: 'files(id)',
+  });
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Google Sheets discovery failed via Drive (${res.status}).`);
+  const data = await res.json() as { files?: Array<{ id: string }> };
+  const id = data.files?.[0]?.id;
+  if (!id) throw new Error('No Google Sheets spreadsheet is available.');
+  return id;
+}
+
+function rowsToObjects(values: unknown[][]): { columns: string[]; rows: SheetRowData[] } {
+  if (values.length === 0) return { columns: [], rows: [] };
+  const columns = values[0].map(value => String(value ?? ''));
+  const rows = values.slice(1).map(row => {
+    const result: SheetRowData = {};
+    columns.forEach((column, index) => {
+      result[column] = row[index] === undefined ? '' : row[index] as any;
+    });
+    return result;
+  });
+  return { columns, rows };
+}
 
 export const fetchSheetDataset = async (spreadsheetId?: string): Promise<SheetDataset> => {
-  const token = await getAccessToken();
-  const targetId = spreadsheetId || localSheets[0].spreadsheetId;
-
-  if (token && targetId && !targetId.startsWith('sheet_')) {
-    try {
-      const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${targetId}?fields=properties.title,sheets.properties`, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (metaRes.ok) {
-        const meta = await metaRes.json();
-        const sheetTitle = meta.sheets?.[0]?.properties?.title || 'Sheet1';
-        const valuesRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${targetId}/values/${encodeURIComponent(sheetTitle)}!A1:Z100`, {
-          headers: { Authorization: `Bearer ${token}` }
-        });
-        if (valuesRes.ok) {
-          const valData = await valuesRes.json();
-          const rawRows: string[][] = valData.values || [];
-          if (rawRows.length > 0) {
-            const columns = rawRows[0];
-            const rows = rawRows.slice(1).map(row => {
-              const rowObj: SheetRowData = {};
-              columns.forEach((col, idx) => {
-                rowObj[col] = row[idx] !== undefined ? row[idx] : '';
-              });
-              return rowObj;
-            });
-            return {
-              spreadsheetId: targetId,
-              title: meta.properties.title,
-              sheetName: sheetTitle,
-              columns,
-              rows,
-              updatedAt: new Date().toISOString(),
-            };
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('Live Sheets API error, using local dataset:', err);
-    }
+  if (isExplicitPreviewMode()) {
+    return localSheets.find(sheet => sheet.spreadsheetId === spreadsheetId) || localSheets[0];
   }
 
-  const found = localSheets.find(s => s.spreadsheetId === targetId);
-  return found || localSheets[0];
+  const token = await requireToken();
+  const targetId = await resolveSpreadsheetId(token, spreadsheetId);
+  const metaRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(targetId)}?fields=properties.title,sheets.properties`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!metaRes.ok) throw new Error(`Google Sheets metadata fetch failed (${metaRes.status}).`);
+
+  const meta = await metaRes.json();
+  const sheetTitle = meta.sheets?.[0]?.properties?.title || 'Sheet1';
+  const range = `${sheetTitle}!A1:Z100`;
+  const valuesRes = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(targetId)}/values/${encodeURIComponent(range)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!valuesRes.ok) throw new Error(`Google Sheets values fetch failed (${valuesRes.status}).`);
+
+  const valuesData = await valuesRes.json() as { values?: unknown[][] };
+  const { columns, rows } = rowsToObjects(valuesData.values ?? []);
+  return {
+    spreadsheetId: targetId,
+    title: meta.properties?.title || '(Untitled spreadsheet)',
+    sheetName: sheetTitle,
+    columns,
+    rows,
+    updatedAt: new Date().toISOString(),
+  };
 };
 
 export const appendSheetRow = async (spreadsheetId: string, rowData: SheetRowData): Promise<void> => {
-  const token = await getAccessToken();
-  if (token && !spreadsheetId.startsWith('sheet_')) {
-    try {
-      const values = [Object.values(rowData)];
-      await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/A1:append?valueInputOption=USER_ENTERED`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ values }),
-      });
-    } catch (err) {
-      console.warn('Live Sheets append row error:', err);
-    }
-  }
-
-  const sheet = localSheets.find(s => s.spreadsheetId === spreadsheetId);
-  if (sheet) {
+  if (isExplicitPreviewMode()) {
+    const sheet = localSheets.find(candidate => candidate.spreadsheetId === spreadsheetId) || localSheets[0];
     sheet.rows.push(rowData);
     sheet.updatedAt = new Date().toISOString();
-    persistSheets();
+    persistPreviewSheets();
+    return;
   }
+
+  const token = await requireToken();
+  const dataset = await fetchSheetDataset(spreadsheetId);
+  const values = [dataset.columns.map(column => rowData[column] ?? '')];
+  const range = `${dataset.sheetName}!A1`;
+  const params = new URLSearchParams({ valueInputOption: 'USER_ENTERED', insertDataOption: 'INSERT_ROWS' });
+  const res = await fetch(`https://sheets.googleapis.com/v4/spreadsheets/${encodeURIComponent(spreadsheetId)}/values/${encodeURIComponent(range)}:append?${params.toString()}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ values }),
+  });
+  if (!res.ok) throw new Error(`Google Sheets append failed (${res.status}).`);
 };

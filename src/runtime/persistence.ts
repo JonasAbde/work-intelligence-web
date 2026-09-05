@@ -1,9 +1,11 @@
 /**
- * Aftergraph Runtime Persistence Engine
- * 
- * Safely manages client-side durable state across reloads and tab sessions.
- * Implements fault-tolerant JSON serialization, quota guardrails, and
- * scenario reset mechanisms.
+ * Browser persistence boundary.
+ *
+ * Canonical Work Intelligence state belongs to Aftergraph/work-intelligence-v2.
+ * Browser storage is intentionally limited to harmless UI preferences. Older
+ * Gemini-generated builds persisted WorkItems, observations and provider data in
+ * localStorage; those values are ignored here so a reload cannot resurrect fake
+ * operational state or shadow the backend.
  */
 
 export const STORAGE_KEYS = {
@@ -22,24 +24,63 @@ export const STORAGE_KEYS = {
   DENSITY: 'aftergraph_density_v2',
 } as const;
 
+const UI_PREFERENCE_KEYS = new Set<string>([
+  STORAGE_KEYS.DENSITY,
+]);
+
+function nonCanonicalFallback<T>(key: string, fallback: T): T {
+  // Never reopen the app in an implicit demo scenario.
+  if (key === STORAGE_KEYS.CURRENT_SCENARIO) {
+    return 'new_workspace' as T;
+  }
+
+  // Canonical/provider collections start empty until an authoritative source
+  // supplies them. Preview scenarios may still populate in-memory state after
+  // an explicit user action.
+  if (Array.isArray(fallback)) {
+    return [] as T;
+  }
+
+  if (key === STORAGE_KEYS.METRICS) {
+    return {
+      autonomousResolutionRate: 0,
+      humanInterventionRatio: 0,
+      meanInferenceLatencyMs: 0,
+      activeObservationsToday: 0,
+      workItemsDiscoveredToday: 0,
+      pendingReviewCount: 0,
+      policyAlignmentScore: 0,
+    } as T;
+  }
+
+  return fallback;
+}
+
 export function loadPersistedState<T>(key: string, fallback: T): T {
+  if (!UI_PREFERENCE_KEYS.has(key)) {
+    return nonCanonicalFallback(key, fallback);
+  }
+
   try {
     const raw = localStorage.getItem(key);
     if (!raw) return fallback;
-    const parsed = JSON.parse(raw);
-    return parsed as T;
+    return JSON.parse(raw) as T;
   } catch (err) {
-    console.warn(`[Persistence] Failed to load key "${key}", using fallback:`, err);
+    console.warn(`[Persistence] Failed to load UI preference "${key}", using fallback:`, err);
     return fallback;
   }
 }
 
 export function savePersistedState<T>(key: string, data: T): boolean {
+  if (!UI_PREFERENCE_KEYS.has(key)) {
+    return false;
+  }
+
   try {
     localStorage.setItem(key, JSON.stringify(data));
     return true;
   } catch (err) {
-    console.warn(`[Persistence] Quota exceeded or error saving key "${key}":`, err);
+    console.warn(`[Persistence] Failed to save UI preference "${key}":`, err);
     return false;
   }
 }
@@ -54,10 +95,8 @@ export function removePersistedState(key: string): void {
 
 export function clearAllPersistedState(): void {
   try {
-    Object.values(STORAGE_KEYS).forEach((key) => {
-      localStorage.removeItem(key);
-    });
+    Object.values(STORAGE_KEYS).forEach((key) => localStorage.removeItem(key));
   } catch (err) {
-    console.warn('[Persistence] Failed to clear storage:', err);
+    console.warn('[Persistence] Failed to clear browser storage:', err);
   }
 }

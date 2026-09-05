@@ -1,8 +1,8 @@
 import { DriveItem } from '../../runtime/runtimeTypes';
+import { isExplicitPreviewMode } from '../../runtime/runtimeMode';
 import { getAccessToken } from './googleAuth';
 import { loadPersistedState, savePersistedState, STORAGE_KEYS } from '../../runtime/persistence';
 
-// Mock initial data for offline / preview before live sign-in
 const defaultDriveItems: DriveItem[] = [
   {
     id: 'drive_doc_01',
@@ -24,151 +24,116 @@ const defaultDriveItems: DriveItem[] = [
     webViewLink: 'https://docs.google.com/spreadsheets/d/drive_sheet_02/edit',
     shared: true,
   },
-  {
-    id: 'drive_pdf_03',
-    name: 'Infra_Security_Rotation_Policy_v2.pdf',
-    mimeType: 'application/pdf',
-    size: '3.4 MB',
-    modifiedTime: new Date(Date.now() - 86400000 * 1).toISOString(),
-    ownerName: 'DevOps Lead',
-    webViewLink: 'https://drive.google.com/file/d/drive_pdf_03/view',
-    shared: false,
-  },
-  {
-    id: 'drive_folder_04',
-    name: 'Production Evidence Dumps',
-    mimeType: 'application/vnd.google-apps.folder',
-    size: '24 items',
-    modifiedTime: new Date(Date.now() - 86400000 * 3).toISOString(),
-    ownerName: 'Autonomous Agent',
-    webViewLink: 'https://drive.google.com/drive/folders/drive_folder_04',
-    shared: true,
-  },
-  {
-    id: 'drive_doc_05',
-    name: 'Sprint 34 Retrospective & Handoff.gdoc',
-    mimeType: 'application/vnd.google-apps.document',
-    size: '88 KB',
-    modifiedTime: new Date(Date.now() - 86400000 * 4).toISOString(),
-    ownerName: 'Alex Chen',
-    webViewLink: 'https://docs.google.com/document/d/drive_doc_05/edit',
-    shared: true,
-  }
 ];
 
 let localDriveItems: DriveItem[] = loadPersistedState(STORAGE_KEYS.DRIVE_ITEMS, defaultDriveItems);
 
-const persistDriveItems = () => {
+function persistPreviewItems() {
   savePersistedState(STORAGE_KEYS.DRIVE_ITEMS, localDriveItems);
-};
+}
+
+async function requireToken(): Promise<string> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Google Drive authorization required.');
+  return token;
+}
+
+function previewFiles(query?: string): DriveItem[] {
+  if (!query) return [...localDriveItems];
+  const normalized = query.toLowerCase();
+  return localDriveItems.filter(item => item.name.toLowerCase().includes(normalized));
+}
 
 export const fetchDriveFiles = async (query?: string): Promise<DriveItem[]> => {
-  const token = await getAccessToken();
-  if (token) {
-    try {
-      let url = 'https://www.googleapis.com/drive/v3/files?pageSize=30&fields=files(id,name,mimeType,size,modifiedTime,iconLink,webViewLink,thumbnailLink,owners)&orderBy=modifiedTime desc';
-      if (query) {
-        url += `&q=name contains '${encodeURIComponent(query)}' and trashed = false`;
-      } else {
-        url += `&q=trashed = false`;
-      }
-      const res = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.files && data.files.length > 0) {
-          return data.files.map((f: any) => ({
-            id: f.id,
-            name: f.name,
-            mimeType: f.mimeType,
-            size: f.size ? `${(parseInt(f.size, 10) / 1024).toFixed(1)} KB` : undefined,
-            modifiedTime: f.modifiedTime,
-            iconUrl: f.iconLink,
-            webViewLink: f.webViewLink,
-            thumbnailLink: f.thumbnailLink,
-            ownerName: f.owners?.[0]?.displayName || 'Google Drive User',
-            shared: f.shared || false,
-          }));
-        }
-      }
-    } catch (err) {
-      console.warn('Live Drive API fetch error, falling back to local items:', err);
-    }
-  }
+  if (isExplicitPreviewMode()) return previewFiles(query);
 
-  // Filter local items
-  if (query) {
-    const q = query.toLowerCase();
-    return localDriveItems.filter(item => item.name.toLowerCase().includes(q));
-  }
-  return [...localDriveItems];
+  const token = await requireToken();
+  const q = query
+    ? `name contains '${query.replace(/'/g, "\\'")}' and trashed = false`
+    : 'trashed = false';
+  const params = new URLSearchParams({
+    pageSize: '30',
+    fields: 'files(id,name,mimeType,size,modifiedTime,iconLink,webViewLink,thumbnailLink,owners,shared)',
+    orderBy: 'modifiedTime desc',
+    q,
+  });
+
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Google Drive list failed (${res.status}).`);
+
+  const data = await res.json() as { files?: any[] };
+  return (data.files ?? []).map(f => ({
+    id: f.id,
+    name: f.name,
+    mimeType: f.mimeType,
+    size: f.size ? `${(Number.parseInt(f.size, 10) / 1024).toFixed(1)} KB` : undefined,
+    modifiedTime: f.modifiedTime,
+    iconUrl: f.iconLink,
+    webViewLink: f.webViewLink,
+    thumbnailLink: f.thumbnailLink,
+    ownerName: f.owners?.[0]?.displayName || 'Google Drive user',
+    shared: Boolean(f.shared),
+  }));
 };
 
 export const deleteDriveFile = async (fileId: string): Promise<void> => {
-  const token = await getAccessToken();
-  if (token) {
-    try {
-      const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (!res.ok && res.status !== 404) {
-        throw new Error(`Failed to delete file from Drive: ${res.statusText}`);
-      }
-    } catch (err) {
-      console.warn('Live delete error:', err);
-    }
+  if (isExplicitPreviewMode()) {
+    localDriveItems = localDriveItems.filter(item => item.id !== fileId);
+    persistPreviewItems();
+    return;
   }
-  localDriveItems = localDriveItems.filter(item => item.id !== fileId);
-  persistDriveItems();
+
+  const token = await requireToken();
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${encodeURIComponent(fileId)}`, {
+    method: 'DELETE',
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok && res.status !== 404) {
+    throw new Error(`Google Drive delete failed (${res.status}).`);
+  }
 };
 
 export const createDriveFile = async (name: string, mimeType: string, content: string): Promise<DriveItem> => {
-  const token = await getAccessToken();
-  if (token) {
-    try {
-      const metadata = { name, mimeType };
-      const form = new FormData();
-      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-      form.append('file', new Blob([content], { type: mimeType }));
-
-      const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,webViewLink', {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${token}` },
-        body: form,
-      });
-      if (res.ok) {
-        const f = await res.json();
-        const newItem: DriveItem = {
-          id: f.id,
-          name: f.name,
-          mimeType: f.mimeType,
-          size: `${content.length} B`,
-          modifiedTime: new Date().toISOString(),
-          ownerName: 'Current User',
-          webViewLink: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`,
-        };
-        localDriveItems.unshift(newItem);
-        persistDriveItems();
-        return newItem;
-      }
-    } catch (err) {
-      console.warn('Live create file error:', err);
-    }
+  if (isExplicitPreviewMode()) {
+    const item: DriveItem = {
+      id: `preview_drive_${Date.now()}`,
+      name,
+      mimeType,
+      size: `${content.length} B`,
+      modifiedTime: new Date().toISOString(),
+      ownerName: 'Preview user',
+      webViewLink: '#preview',
+      shared: false,
+    };
+    localDriveItems.unshift(item);
+    persistPreviewItems();
+    return item;
   }
 
-  const newItem: DriveItem = {
-    id: `local_drive_${Date.now()}`,
-    name,
-    mimeType,
+  const token = await requireToken();
+  const metadata = { name, mimeType };
+  const form = new FormData();
+  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+  form.append('file', new Blob([content], { type: mimeType }));
+
+  const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id,name,mimeType,webViewLink,modifiedTime', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${token}` },
+    body: form,
+  });
+  if (!res.ok) throw new Error(`Google Drive create failed (${res.status}).`);
+
+  const file = await res.json();
+  return {
+    id: file.id,
+    name: file.name,
+    mimeType: file.mimeType,
     size: `${content.length} B`,
-    modifiedTime: new Date().toISOString(),
-    ownerName: 'Current User',
-    webViewLink: '#',
+    modifiedTime: file.modifiedTime || new Date().toISOString(),
+    ownerName: 'Current Google user',
+    webViewLink: file.webViewLink,
     shared: false,
   };
-  localDriveItems.unshift(newItem);
-  persistDriveItems();
-  return newItem;
 };

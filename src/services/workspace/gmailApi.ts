@@ -1,226 +1,156 @@
 import { GmailMessageItem } from '../../runtime/runtimeTypes';
+import { isExplicitPreviewMode } from '../../runtime/runtimeMode';
 import { getAccessToken } from './googleAuth';
 import { loadPersistedState, savePersistedState, STORAGE_KEYS } from '../../runtime/persistence';
 
-const defaultGmailMessages: GmailMessageItem[] = [
+const previewMessages: GmailMessageItem[] = [
   {
-    id: 'msg_sec_alert_91',
-    threadId: 'th_sec_91',
-    from: 'security-notify@infra.internal',
-    fromName: 'Infra SecOps Alert',
-    to: 'engineering-ops@internal',
-    subject: 'Action Required: Primary Root Key Rotation SLA (24h left)',
-    snippet: 'AWS and GCP KMS cross-tenant primary key rotation policy requires human signoff. Inferred blast radius: 4 DB clusters.',
-    body: `Hello Team,
-
-Per compliance audit rule SEC-8902, the quarterly KMS key rotation cycle must complete before Sept 6th.
-
-Autonomous agent Aftergraph has already staged the candidate configuration, verified zero-downtime health on staging canary, and now requires human signoff in Review Queue.
-
-Affected Volumes:
-- prod-cluster-us-east1
-- prod-cluster-eu-west1
-- replica-backup-cold
-- event-bus-vault
-
-Please confirm rotation authorization immediately.
-
-Regards,
-Security Automation Service`,
-    date: new Date(Date.now() - 1000 * 60 * 45).toISOString(),
-    isUnread: true,
-    hasAttachments: true,
-    labels: ['INBOX', 'URGENT', 'SECURITY'],
-    extractedWorkItemCandidate: {
-      suggestedTitle: 'Approve Primary Root Key Rotation SLA',
-      suggestedAction: 'Execute staged KMS key rotation for 4 production clusters with zero downtime canary verification.',
-      priority: 'urgent',
-      confidence: 0.94,
-      reasoning: 'Compliance rule SEC-8902 SLA expiring in 24 hours. Staged changes verified on staging canary.'
-    }
-  },
-  {
-    id: 'msg_sprint_sync_92',
-    threadId: 'th_sprint_92',
-    from: 'sarah.miller@product.io',
-    fromName: 'Sarah Miller',
-    to: 'core-team@internal',
-    subject: 'Client Meeting Notes: Fintech Integration Specs needed for Friday',
-    snippet: 'Hey team, during our sync with Acme Corp they asked for the webhook payload schemas and retry policy document.',
-    body: `Hey team,
-
-Following up on today's client sync with Acme Corp:
-1. They need the webhook payload schemas for the new transaction stream.
-2. They specifically asked about exponential backoff retry policies and timeout intervals.
-
-Can we make sure this is added to the Sprint 34 backlog and assigned before Friday?
-
-Thanks!
-Sarah`,
-    date: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
+    id: 'preview_msg_1',
+    threadId: 'preview_thread_1',
+    from: 'customer@example.com',
+    fromName: 'Preview Customer',
+    to: 'ops@example.com',
+    subject: 'Preview: request confirmation before Friday',
+    snippet: 'This is explicit preview data and is not a live Gmail message.',
+    body: 'This is explicit preview data and is not a live Gmail message.',
+    date: new Date().toISOString(),
     isUnread: true,
     hasAttachments: false,
-    labels: ['INBOX', 'PRODUCT'],
+    labels: ['INBOX'],
     extractedWorkItemCandidate: {
-      suggestedTitle: 'Document Webhook Schemas & Retry Policy for Acme Corp',
-      suggestedAction: 'Draft and publish technical specification for transaction stream webhooks and exponential backoff retry behaviors.',
-      priority: 'high',
-      confidence: 0.89,
-      reasoning: 'Explicit client request with Friday deadline extracted from Sarah Miller (Product Lead).'
-    }
-  },
-  {
-    id: 'msg_billing_alert_93',
-    threadId: 'th_bill_93',
-    from: 'cloud-billing@provider.com',
-    fromName: 'Cloud Infrastructure Billing',
-    to: 'devops-alerts@internal',
-    subject: 'Monthly Compute Budget at 85% threshold',
-    snippet: 'Billing alert: monthly spend reached $12,450 of allocated $15,000 budget.',
-    body: `Monthly spend threshold notification:
-Current month-to-date spend has reached 85% of budget.
-Top contributors:
-- Kubernetes egress traffic ($3,420)
-- BigQuery query compute ($2,890)`,
-    date: new Date(Date.now() - 1000 * 60 * 60 * 8).toISOString(),
-    isUnread: false,
-    hasAttachments: false,
-    labels: ['INBOX', 'BILLING'],
-    extractedWorkItemCandidate: {
-      suggestedTitle: 'Review Compute Egress Spend & BigQuery Usage',
-      suggestedAction: 'Analyze Kubernetes egress routing and optimize high-cost BigQuery query partitions.',
+      suggestedTitle: 'Preview follow-up request',
+      suggestedAction: 'Review the preview request.',
       priority: 'medium',
-      confidence: 0.82,
-      reasoning: 'Automated 85% budget consumption alert on cloud infrastructure.'
-    }
-  }
+      confidence: 0.8,
+      reasoning: 'Preview-only candidate. No backend inference claim.',
+    },
+  },
 ];
 
-let localGmailMessages: GmailMessageItem[] = loadPersistedState(STORAGE_KEYS.GMAIL_MESSAGES, defaultGmailMessages);
+let localMessages: GmailMessageItem[] = loadPersistedState(STORAGE_KEYS.GMAIL_MESSAGES, previewMessages);
 
-const persistGmailMessages = () => {
-  savePersistedState(STORAGE_KEYS.GMAIL_MESSAGES, localGmailMessages);
-};
+function persistPreviewMessages() {
+  savePersistedState(STORAGE_KEYS.GMAIL_MESSAGES, localMessages);
+}
+
+async function requireToken(): Promise<string> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Google Gmail authorization required.');
+  return token;
+}
+
+function getHeader(headers: Array<{ name?: string; value?: string }>, name: string): string {
+  return headers.find(header => header.name?.toLowerCase() === name.toLowerCase())?.value ?? '';
+}
+
+function parseFrom(raw: string): { name: string; email: string } {
+  const match = raw.match(/^\s*"?([^"<]*)"?\s*<([^>]+)>\s*$/);
+  if (match) return { name: match[1].trim() || match[2], email: match[2] };
+  return { name: raw.split('@')[0] || raw || 'Unknown sender', email: raw };
+}
+
+function encodeBase64Url(value: string): string {
+  const bytes = new TextEncoder().encode(value);
+  let binary = '';
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function filterPreviewMessages(query?: string): GmailMessageItem[] {
+  if (!query) return [...localMessages];
+  const normalized = query.toLowerCase();
+  return localMessages.filter(message =>
+    message.subject.toLowerCase().includes(normalized) ||
+    message.from.toLowerCase().includes(normalized) ||
+    message.snippet.toLowerCase().includes(normalized),
+  );
+}
 
 export const fetchGmailMessages = async (query?: string): Promise<GmailMessageItem[]> => {
-  const token = await getAccessToken();
-  if (token) {
-    try {
-      let url = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=20';
-      if (query) {
-        url += `&q=${encodeURIComponent(query)}`;
-      }
-      const listRes = await fetch(url, {
-        headers: { Authorization: `Bearer ${token}` }
-      });
-      if (listRes.ok) {
-        const listData = await listRes.json();
-        if (listData.messages && listData.messages.length > 0) {
-          const detailPromises = listData.messages.slice(0, 10).map(async (m: { id: string }) => {
-            const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${m.id}?format=full`, {
-              headers: { Authorization: `Bearer ${token}` }
-            });
-            if (!detailRes.ok) return null;
-            const full = await detailRes.json();
-            const headers = full.payload?.headers || [];
-            const getHeader = (name: string) => headers.find((h: any) => h.name.toLowerCase() === name.toLowerCase())?.value || '';
-            const fromRaw = getHeader('From');
-            const matchName = fromRaw.match(/^(.*?)\s*<.*>$/);
-            const fromName = matchName ? matchName[1].replace(/["']/g, '') : fromRaw.split('@')[0];
-            const subject = getHeader('Subject') || '(No subject)';
-            const date = getHeader('Date') || new Date().toISOString();
+  if (isExplicitPreviewMode()) return filterPreviewMessages(query);
 
-            return {
-              id: full.id,
-              threadId: full.threadId,
-              from: fromRaw,
-              fromName: fromName || fromRaw,
-              to: getHeader('To'),
-              subject,
-              snippet: full.snippet || '',
-              date: new Date(date).toISOString(),
-              isUnread: full.labelIds?.includes('UNREAD') ?? false,
-              hasAttachments: (full.payload?.parts || []).some((p: any) => !!p.filename),
-              labels: full.labelIds || [],
-              extractedWorkItemCandidate: {
-                suggestedTitle: `Follow up on: ${subject}`,
-                suggestedAction: full.snippet || 'Review and take appropriate action on email correspondence.',
-                priority: 'medium' as const,
-                confidence: 0.85,
-                reasoning: 'Extracted from incoming Gmail thread.',
-              }
-            };
-          });
-          const resolved = (await Promise.all(detailPromises)).filter(Boolean) as GmailMessageItem[];
-          if (resolved.length > 0) {
-            return resolved;
-          }
-        }
-      }
-    } catch (err) {
-      console.warn('Live Gmail API fetch error, using local fallback:', err);
-    }
-  }
+  const token = await requireToken();
+  const params = new URLSearchParams({ maxResults: '20' });
+  if (query) params.set('q', query);
 
-  if (query) {
-    const q = query.toLowerCase();
-    return localGmailMessages.filter(m => 
-      m.subject.toLowerCase().includes(q) || 
-      m.from.toLowerCase().includes(q) || 
-      m.snippet.toLowerCase().includes(q)
-    );
-  }
-  return [...localGmailMessages];
+  const listRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!listRes.ok) throw new Error(`Gmail list failed (${listRes.status}).`);
+
+  const listData = await listRes.json() as { messages?: Array<{ id: string }> };
+  const refs = (listData.messages ?? []).slice(0, 20);
+  if (refs.length === 0) return [];
+
+  const details = await Promise.all(refs.map(async ({ id }) => {
+    const detailRes = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/messages/${encodeURIComponent(id)}?format=metadata&metadataHeaders=From&metadataHeaders=To&metadataHeaders=Subject&metadataHeaders=Date`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!detailRes.ok) throw new Error(`Gmail message fetch failed (${detailRes.status}).`);
+
+    const full = await detailRes.json();
+    const headers = (full.payload?.headers ?? []) as Array<{ name?: string; value?: string }>;
+    const from = parseFrom(getHeader(headers, 'From'));
+    const rawDate = getHeader(headers, 'Date');
+    const parsedDate = rawDate ? new Date(rawDate) : new Date();
+
+    const item: GmailMessageItem = {
+      id: full.id,
+      threadId: full.threadId,
+      from: from.email,
+      fromName: from.name,
+      to: getHeader(headers, 'To'),
+      subject: getHeader(headers, 'Subject') || '(No subject)',
+      snippet: full.snippet || '',
+      date: Number.isNaN(parsedDate.getTime()) ? new Date().toISOString() : parsedDate.toISOString(),
+      isUnread: full.labelIds?.includes('UNREAD') ?? false,
+      hasAttachments: false,
+      labels: full.labelIds ?? [],
+    };
+    return item;
+  }));
+
+  return details;
 };
 
 export const sendGmailMessage = async (to: string, subject: string, bodyText: string): Promise<void> => {
-  const token = await getAccessToken();
-  if (token) {
-    try {
-      const emailLines = [
-        `To: ${to}`,
-        'Content-Type: text/plain; charset=utf-8',
-        'MIME-Version: 1.0',
-        `Subject: ${subject}`,
-        '',
-        bodyText
-      ];
-      const rawEmail = btoa(unescape(encodeURIComponent(emailLines.join('\r\n'))))
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=+$/, '');
-
-      const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ raw: rawEmail }),
-      });
-      if (!res.ok) {
-        throw new Error(`Gmail API send failed: ${res.statusText}`);
-      }
-    } catch (err) {
-      console.warn('Live Gmail send failed:', err);
-    }
+  if (isExplicitPreviewMode()) {
+    const now = Date.now();
+    localMessages.unshift({
+      id: `preview_sent_${now}`,
+      threadId: `preview_thread_sent_${now}`,
+      from: 'preview-user@example.com',
+      fromName: 'Preview User',
+      to,
+      subject,
+      snippet: bodyText.slice(0, 120),
+      body: bodyText,
+      date: new Date(now).toISOString(),
+      isUnread: false,
+      hasAttachments: false,
+      labels: ['SENT'],
+    });
+    persistPreviewMessages();
+    return;
   }
 
-  // Record sent message locally
-  const newSent: GmailMessageItem = {
-    id: `sent_${Date.now()}`,
-    threadId: `th_sent_${Date.now()}`,
-    from: 'me@company.io',
-    fromName: 'You',
-    to,
-    subject,
-    snippet: bodyText.slice(0, 80),
-    body: bodyText,
-    date: new Date().toISOString(),
-    isUnread: false,
-    hasAttachments: false,
-    labels: ['SENT'],
-  };
-  localGmailMessages.unshift(newSent);
-  persistGmailMessages();
+  const token = await requireToken();
+  const message = [
+    `To: ${to}`,
+    'Content-Type: text/plain; charset=utf-8',
+    'MIME-Version: 1.0',
+    `Subject: ${subject}`,
+    '',
+    bodyText,
+  ].join('\r\n');
+
+  const res = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ raw: encodeBase64Url(message) }),
+  });
+  if (!res.ok) throw new Error(`Gmail send failed (${res.status}).`);
 };

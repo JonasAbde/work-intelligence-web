@@ -1,3 +1,4 @@
+import { isExplicitPreviewMode } from '../../runtime/runtimeMode';
 import { getAccessToken, getAppletApiKey } from './googleAuth';
 
 declare global {
@@ -7,45 +8,6 @@ declare global {
   }
 }
 
-export const loadGooglePickerScript = (): Promise<void> => {
-  return new Promise((resolve) => {
-    if (window.gapi && window.google?.picker) {
-      resolve();
-      return;
-    }
-
-    const existingScript = document.getElementById('google-picker-script');
-    if (existingScript) {
-      if (window.gapi) {
-        window.gapi.load('picker', () => {
-          resolve();
-        });
-      } else {
-        existingScript.addEventListener('load', () => {
-          window.gapi?.load('picker', () => {
-            resolve();
-          });
-        });
-      }
-      return;
-    }
-
-    const script = document.createElement('script');
-    script.id = 'google-picker-script';
-    script.src = 'https://apis.google.com/js/api.js';
-    script.onload = () => {
-      window.gapi.load('picker', () => {
-        resolve();
-      });
-    };
-    script.onerror = () => {
-      console.warn('Could not load Google Picker script via CDN.');
-      resolve();
-    };
-    document.body.appendChild(script);
-  });
-};
-
 export interface PickedFileResult {
   id: string;
   name: string;
@@ -54,27 +16,65 @@ export interface PickedFileResult {
   sizeBytes?: number;
 }
 
+export const loadGooglePickerScript = (): Promise<void> => {
+  return new Promise((resolve, reject) => {
+    if (window.gapi && window.google?.picker) {
+      resolve();
+      return;
+    }
+
+    const loadPicker = () => {
+      if (!window.gapi) {
+        reject(new Error('Google API loader is unavailable.'));
+        return;
+      }
+      window.gapi.load('picker', {
+        callback: () => resolve(),
+        onerror: () => reject(new Error('Google Picker module failed to load.')),
+      });
+    };
+
+    const existingScript = document.getElementById('google-picker-script') as HTMLScriptElement | null;
+    if (existingScript) {
+      if (window.gapi) loadPicker();
+      else {
+        existingScript.addEventListener('load', loadPicker, { once: true });
+        existingScript.addEventListener('error', () => reject(new Error('Google API script failed to load.')), { once: true });
+      }
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.id = 'google-picker-script';
+    script.src = 'https://apis.google.com/js/api.js';
+    script.async = true;
+    script.defer = true;
+    script.onload = loadPicker;
+    script.onerror = () => reject(new Error('Google API script failed to load.'));
+    document.head.appendChild(script);
+  });
+};
+
 export const openGooglePicker = async (
   onPicked: (file: PickedFileResult) => void,
-  onError?: (err: any) => void
+  onError?: (err: unknown) => void,
 ): Promise<boolean> => {
+  if (isExplicitPreviewMode()) return false;
+
   try {
     const token = await getAccessToken();
-    const apiKey = getAppletApiKey();
+    if (!token) throw new Error('Google Drive authorization required.');
 
-    if (!token) {
-      return false; // Caller should fallback to In-House Picker dialog
-    }
+    const apiKey = getAppletApiKey();
+    if (!apiKey) throw new Error('Google Picker developer key is not configured.');
 
     await loadGooglePickerScript();
-
-    if (!window.google?.picker) {
-      return false;
-    }
+    if (!window.google?.picker) throw new Error('Google Picker API is unavailable after loading.');
 
     const pickerCallback = (data: any) => {
       if (data.action === window.google.picker.Action.PICKED) {
-        const doc = data.docs[0];
+        const doc = data.docs?.[0];
+        if (!doc) return;
         onPicked({
           id: doc.id,
           name: doc.name,
@@ -85,28 +85,24 @@ export const openGooglePicker = async (
       }
     };
 
-    const viewDocs = new window.google.picker.DocsView(window.google.picker.ViewId.DOCS)
+    const docsView = new window.google.picker.DocsView(window.google.picker.ViewId.DOCS)
       .setIncludeFolders(true)
       .setSelectFolderEnabled(false);
+    const sheetsView = new window.google.picker.DocsView(window.google.picker.ViewId.SPREADSHEETS);
 
-    const viewSheets = new window.google.picker.DocsView(window.google.picker.ViewId.SPREADSHEETS);
-
-    const builder = new window.google.picker.PickerBuilder()
+    const picker = new window.google.picker.PickerBuilder()
       .enableFeature(window.google.picker.Feature.NAV_HIDDEN)
-      .enableFeature(window.google.picker.Feature.MULTISELECT_ENABLED)
-      .setAppId(apiKey)
       .setOAuthToken(token)
-      .addView(viewDocs)
-      .addView(viewSheets)
       .setDeveloperKey(apiKey)
-      .setCallback(pickerCallback);
+      .addView(docsView)
+      .addView(sheetsView)
+      .setCallback(pickerCallback)
+      .build();
 
-    const picker = builder.build();
     picker.setVisible(true);
     return true;
-  } catch (err) {
-    console.warn('Error launching Google Picker builder:', err);
-    if (onError) onError(err);
-    return false;
+  } catch (err: unknown) {
+    onError?.(err);
+    throw err;
   }
 };
