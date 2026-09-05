@@ -51,6 +51,7 @@ export function buildRoutes(baseUrl: string, tenantId: string) {
   const tenant = encode(tenantId);
   return {
     health: `${baseUrl}/healthz`,
+    observations: `${baseUrl}/v1/observations`,
     workItems: (limit = 100) => `${baseUrl}/v1/work-items?tenant_id=${tenant}&limit=${limit}`,
     workItem: (id: string) => `${baseUrl}/v1/work-items/${encode(id)}?tenant_id=${tenant}`,
     review: (id: string) => `${baseUrl}/v1/work-items/${encode(id)}/review?tenant_id=${tenant}`,
@@ -207,4 +208,8 @@ export function reviewUiStatus(action: 'approve' | 'reject' | 'snooze' | 'cancel
     case 'snooze': return 'blocked';
     case 'cancel': return 'completed';
   }
+}
+
+export function shouldUseLocalPreviewMutations(isMockMode: boolean): boolean {
+  return isMockMode;
 }
