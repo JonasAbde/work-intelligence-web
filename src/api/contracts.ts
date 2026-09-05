@@ -31,16 +31,12 @@ export interface BackendObservation {
 }
 
 export interface BackendMetrics {
-  total_ingested?: number;
-  total_candidates?: number;
-  total_approved?: number;
-  total_published?: number;
-  total_rejected?: number;
-  total_cancelled?: number;
-  total_snoozed?: number;
-  total_promoted?: number;
-  by_status?: Record<string, number>;
-  by_source?: Record<string, number>;
+  count_by_action?: Record<string, number>;
+  count_by_source?: Record<string, number>;
+  count_by_tenant?: Record<string, number>;
+  open_work_items?: Record<string, number>;
+  total_observations?: number;
+  total_work_items?: number;
 }
 
 export interface ObservationIngestInput {
@@ -210,16 +206,14 @@ export function deriveReviewQueue(items: WorkItem[]): ReviewQueueItem[] {
 }
 
 export function mapBackendMetrics(metrics: BackendMetrics, pendingReviewCount: number): SystemMetrics {
-  const candidates = metrics.total_candidates ?? 0;
-  const automated = (metrics.total_published ?? 0) + (metrics.total_promoted ?? 0);
-  const reviewed = (metrics.total_approved ?? 0) + (metrics.total_rejected ?? 0);
-  const denominator = candidates || 1;
+  // V2 currently exposes durable cumulative counts only. The UI model still contains
+  // historical KPI slots for rates/latency; keep those at 0 rather than fabricating them.
   return {
-    autonomousResolutionRate: candidates ? (automated / denominator) * 100 : 0,
-    humanInterventionRatio: candidates ? (reviewed / denominator) * 100 : 0,
+    autonomousResolutionRate: 0,
+    humanInterventionRatio: 0,
     meanInferenceLatencyMs: 0,
-    activeObservationsToday: metrics.total_ingested ?? 0,
-    workItemsDiscoveredToday: candidates,
+    activeObservationsToday: metrics.total_observations ?? 0,
+    workItemsDiscoveredToday: metrics.total_work_items ?? 0,
     pendingReviewCount,
     policyAlignmentScore: 0,
   };
