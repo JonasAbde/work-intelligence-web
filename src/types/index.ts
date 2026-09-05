@@ -1,4 +1,4 @@
-export type ConnectionState = 
+export type ConnectionState =
   | 'connected'
   | 'connecting'
   | 'degraded'
@@ -9,7 +9,7 @@ export type ConnectionState =
 
 export type Priority = 'urgent' | 'high' | 'medium' | 'low';
 
-export type WorkItemStatus = 
+export type WorkItemStatus =
   | 'inferred'
   | 'needs_review'
   | 'approved'
@@ -19,26 +19,16 @@ export type WorkItemStatus =
   | 'rejected'
   | 'completed';
 
-export type SourceType = 
-  | 'gmail'
-  | 'calendar'
-  | 'conversation'
-  | 'renos'
-  | 'code'
-  | 'system';
+export type SourceType = 'gmail' | 'calendar' | 'conversation' | 'renos' | 'code' | 'system';
 
 export interface Observation {
   id: string;
   source: SourceType;
-  actor: {
-    name: string;
-    email: string;
-    avatar?: string;
-  };
+  actor: { name: string; email: string; avatar?: string };
   timestamp: string;
   rawText: string;
   inferredAction: string;
-  confidence: number; // 0.00 to 1.00
+  confidence: number;
   resolutionStatus: 'unprocessed' | 'candidate_created' | 'linked_to_workitem' | 'discarded';
   linkedWorkItemId?: string;
   provenance: {
@@ -73,7 +63,7 @@ export interface PolicyRule {
 
 export interface PublicationTarget {
   id: string;
-  target: 'RenOS' | 'WORKS' | 'GitHub' | 'Webhook' | 'Linear';
+  target: string;
   status: 'published' | 'pending' | 'awaiting_approval' | 'failed' | 'not_targeted';
   externalReference?: string;
   syncedAt?: string;
@@ -99,12 +89,12 @@ export interface Candidate {
   confidence: number;
   similarityScore: number;
   reasoning: string;
-  sourceObservations: string[]; // Observation IDs
+  sourceObservations: string[];
   incomingAt: string;
 }
 
 export interface WorkItem {
-  id: string; // e.g. WI-1024
+  id: string;
   title: string;
   description: string;
   status: WorkItemStatus;
@@ -117,28 +107,23 @@ export interface WorkItem {
   dueDate?: string;
   createdAt: string;
   updatedAt: string;
-  confidence: number; // 0.00 to 1.00
-  
-  // Operational Intelligence Depth
+  confidence: number;
   whyExists: {
     inferenceSummary: string;
     model: string;
     triggerObservationId: string;
     inferredIntent: string;
   };
-  
   resolution: {
     decisionType: 'autonomous_created' | 'merged_candidate' | 'policy_promoted' | 'human_created';
     details: string;
   };
-  
   policies: PolicyRule[];
   evidence: EvidenceItem[];
   publications: PublicationTarget[];
   activity: ActivityLog[];
   sourceObservationIds: string[];
-  
-  // Pending review data (if status is 'needs_review')
+  allowedActions?: string[];
   reviewCategory?: 'high_confidence' | 'ambiguous_merge' | 'execution_promotion' | 'policy_conflict';
   candidateComparison?: Candidate;
 }
@@ -164,11 +149,11 @@ export interface IntegrationStatus {
 }
 
 export interface SystemMetrics {
-  autonomousResolutionRate: number; // e.g. 84.2%
-  humanInterventionRatio: number; // e.g. 15.8%
-  meanInferenceLatencyMs: number; // e.g. 312ms
+  autonomousResolutionRate: number;
+  humanInterventionRatio: number;
+  meanInferenceLatencyMs: number;
   activeObservationsToday: number;
   workItemsDiscoveredToday: number;
   pendingReviewCount: number;
-  policyAlignmentScore: number; // e.g. 99.4%
+  policyAlignmentScore: number;
 }
