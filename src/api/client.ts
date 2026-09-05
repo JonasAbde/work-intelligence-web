@@ -12,6 +12,7 @@ import {
   mapBackendMetrics,
   mapBackendObservation,
   mapBackendWorkItem,
+  selectObservationDetailItems,
 } from './contracts';
 
 const BASE_URL = '/api';
@@ -60,7 +61,7 @@ async function fetchBackendWorkItems(): Promise<BackendWorkItem[]> {
 
 async function fetchBackendDetails(items: BackendWorkItem[]): Promise<BackendWorkItemDetailResponse[]> {
   return Promise.all(
-    items.map(item =>
+    selectObservationDetailItems(items).map(item =>
       fetch(routes.workItem(item.id)).then(res =>
         readJson<BackendWorkItemDetailResponse>(res, `Failed to fetch work item ${item.id}`)
       )
@@ -163,7 +164,6 @@ export const apiClient = {
 
   async getIntegrations(isMockMode: boolean): Promise<IntegrationStatus[]> {
     if (isMockMode) return [...mockIntegrations];
-    // V2 has no integration-health endpoint yet. Fail closed by showing no fabricated integrations.
     return [];
   },
 
