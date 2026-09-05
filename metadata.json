@@ -1,0 +1,6 @@
+{
+  "name": "Aftergraph Work Intelligence",
+  "description": "Operational intelligence workspace for autonomous work item discovery, evidence provenance, policy verification, and human-in-the-loop review.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
