@@ -9,18 +9,25 @@ import {
   buildObservationPayload,
   deriveReviewQueue,
   reviewUiStatus,
-  selectObservationDetailItems,
   shouldUseLocalPreviewMutations,
 } from '../src/api/contracts.ts';
 
 const routes = buildRoutes('/api', 'tenant-a');
 
-test('routes match authoritative Work Intelligence V2 API', () => {
+test('routes match authoritative current Work Intelligence V2 API', () => {
   assert.equal(routes.health, '/api/healthz');
   assert.equal(routes.observations, '/api/v1/observations');
+  assert.equal(routes.observationList(100), '/api/v1/observations?tenant_id=tenant-a&limit=100');
+  assert.equal(routes.observationList(25, 'email'), '/api/v1/observations?tenant_id=tenant-a&limit=25&source=email');
   assert.equal(routes.workItems(100), '/api/v1/work-items?tenant_id=tenant-a&limit=100');
+  assert.equal(routes.workItems(50, 'OPEN', 'high'), '/api/v1/work-items?tenant_id=tenant-a&limit=50&status=OPEN&priority=high');
   assert.equal(routes.workItem('wi_123'), '/api/v1/work-items/wi_123?tenant_id=tenant-a');
   assert.equal(routes.review('wi_123'), '/api/v1/work-items/wi_123/review?tenant_id=tenant-a');
+  assert.equal(routes.transitions('wi_123'), '/api/v1/work-items/wi_123/transitions?tenant_id=tenant-a');
+  assert.equal(routes.publications('wi_123'), '/api/v1/work-items/wi_123/publications?tenant_id=tenant-a');
+  assert.equal(routes.actions('wi_123'), '/api/v1/work-items/wi_123/actions?tenant_id=tenant-a');
+  assert.equal(routes.readiness, '/api/v1/readiness');
+  assert.equal(routes.usage, '/api/v1/usage');
   assert.equal(routes.metrics, '/api/v1/metrics');
 });
 
@@ -43,12 +50,6 @@ test('observation ingest payload binds frontend source data to configured tenant
   });
 });
 
-test('observation detail fanout is capped to protect the 60 rpm backend limit', () => {
-  const items = Array.from({ length: 30 }, (_, index) => ({ id: `wi_${index}` }));
-  assert.equal(selectObservationDetailItems(items).length, 8);
-  assert.deepEqual(selectObservationDetailItems(items).map(item => item.id), items.slice(0, 8).map(item => item.id));
-});
-
 test('backend OPEN work item maps to reviewable UI item without invented execution state', () => {
   const item = mapBackendWorkItem({
     id: 'wi_123', tenant_id: 'tenant-a', title: 'Send confirmation', summary: 'Customer needs confirmation',
@@ -63,14 +64,25 @@ test('backend OPEN work item maps to reviewable UI item without invented executi
   assert.equal(item.confidence, 0.91);
 });
 
-test('backend observations map into source-neutral UI observations', () => {
+test('global backend observations map into source-neutral UI observations without invented work links', () => {
   const obs = mapBackendObservation({
     id: 'obs_1', tenant_id: 'tenant-a', source: 'email', text: 'Please send confirmation',
-    external_id: 'msg-1', actor: 'customer@example.com', occurred_at: '2026-09-05T10:00:00Z', created_at: '2026-09-05T10:00:01Z', metadata: {}
-  }, 'wi_123');
+    external_id: 'msg-1', actor: 'customer@example.com', occurred_at: '2026-09-05T10:00:00Z', created_at: '2026-09-05T10:00:01Z'
+  });
   assert.equal(obs.source, 'gmail');
-  assert.equal(obs.linkedWorkItemId, 'wi_123');
+  assert.equal(obs.linkedWorkItemId, undefined);
+  assert.equal(obs.resolutionStatus, 'unprocessed');
   assert.equal(obs.rawText, 'Please send confirmation');
+});
+
+test('work-item detail observations may be mapped with an authoritative work link', () => {
+  const obs = mapBackendObservation({
+    id: 'obs_2', tenant_id: 'tenant-a', source: 'calendar', text: 'Follow up',
+    external_id: 'event-1', actor: 'owner@example.com', occurred_at: null, created_at: '2026-09-05T11:00:00Z'
+  }, 'wi_123');
+  assert.equal(obs.source, 'calendar');
+  assert.equal(obs.linkedWorkItemId, 'wi_123');
+  assert.equal(obs.resolutionStatus, 'linked_to_workitem');
 });
 
 test('review payload uses backend review contract', () => {
@@ -91,7 +103,7 @@ test('review queue is derived only from backend-open items', () => {
   assert.equal(queue[0].workItem.id, 'wi_open');
 });
 
-test('metrics mapping matches the durable V2 MetricsRecorder snapshot without inventing unsupported KPIs', () => {
+test('metrics mapping matches durable V2 recorder without inventing unsupported KPIs', () => {
   const result = mapBackendMetrics({
     count_by_action: { replayed: 1, created: 4, merged: 2, observed: 3 },
     count_by_source: { email: 5, conversation: 5 },
