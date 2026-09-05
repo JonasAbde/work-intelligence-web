@@ -4,6 +4,8 @@ import {
   BackendMetrics,
   BackendObservation,
   BackendWorkItem,
+  ObservationIngestInput,
+  buildObservationPayload,
   buildReviewPayload,
   buildRoutes,
   deriveReviewQueue,
@@ -26,6 +28,12 @@ interface BackendWorkItemDetailResponse {
   work_item: BackendWorkItem;
   observations: BackendObservation[];
   publications: Array<Record<string, unknown>>;
+}
+
+export interface BackendIngestResult {
+  action: string;
+  observation: BackendObservation;
+  work_item: BackendWorkItem | null;
 }
 
 let inFlightWorkItems: Promise<BackendWorkItem[]> | null = null;
@@ -167,6 +175,16 @@ export const apiClient = {
     ]);
     const pendingReviewCount = backendItems.filter(item => item.status.toUpperCase() === 'OPEN').length;
     return mapBackendMetrics(metricsResponse, pendingReviewCount);
+  },
+
+  async ingestObservation(input: ObservationIngestInput, isMockMode: boolean): Promise<BackendIngestResult | null> {
+    if (isMockMode) return null;
+    const res = await fetch(routes.observations, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(buildObservationPayload(TENANT_ID, input)),
+    });
+    return readJson<BackendIngestResult>(res, 'Failed to ingest observation');
   },
 
   async approveWorkItem(id: string, isMockMode: boolean): Promise<boolean> {
