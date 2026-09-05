@@ -3,34 +3,44 @@ import { createProxyMiddleware } from 'http-proxy-middleware';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
+import { backendAuthHeader, resolveBackendUrl } from './server-config.mjs';
 
 dotenv.config();
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
 const PORT = process.env.PORT || 3000;
-const API_URL = process.env.WORK_INTELLIGENCE_API_URL || 'http://localhost:8000';
+const API_URL = resolveBackendUrl(process.env);
+const AUTH_HEADER = backendAuthHeader(process.env);
 
-// This BFF proxy only forwards requests to the authoritative Aftergraph backend.
-// IT DOES NOT IMPLEMENT ANY DOMAIN LOGIC OR STORE DATA.
+// BFF proxy only. Domain logic and durable data stay in Work Intelligence V2.
 app.use('/api', createProxyMiddleware({
   target: API_URL,
   changeOrigin: true,
   pathRewrite: {
-    '^/api': '' // Rewrite /api to match backend expectations (adjust if backend expects /api)
+    '^/api': '',
   },
-  onError: (err, req, res) => {
-    console.error('Proxy connection error to real backend:', err.message);
-    res.status(503).json({ 
-      error: 'Backend unavailable', 
-      details: 'The BFF could not reach the authoritative Work Intelligence API.' 
-    });
-  }
+  on: {
+    proxyReq: (proxyReq) => {
+      if (AUTH_HEADER) {
+        proxyReq.setHeader('Authorization', AUTH_HEADER);
+      }
+    },
+    error: (err, _req, res) => {
+      console.error('Proxy connection error to authoritative backend:', err.message);
+      if ('writeHead' in res) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({
+          error: 'Backend unavailable',
+          details: 'The BFF could not reach the authoritative Work Intelligence API.',
+        }));
+      }
+    },
+  },
 }));
 
-// Serve static React production build
 app.use(express.static(path.join(__dirname, 'dist')));
-app.get('*', (req, res) => {
+app.get('*', (_req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
