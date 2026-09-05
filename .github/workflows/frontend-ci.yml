@@ -59,6 +59,9 @@ jobs:
       - name: Frontend unit and contract tests
         run: npm test
 
+      - name: Frontend typecheck
+        run: npm run typecheck
+
       - name: Production build
         run: npm run build
 
