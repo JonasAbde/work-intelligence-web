@@ -7,6 +7,7 @@ import {
   mapBackendMetrics,
   buildReviewPayload,
   deriveReviewQueue,
+  reviewUiStatus,
 } from '../src/api/contracts.ts';
 
 const routes = buildRoutes('/api', 'tenant-a');
@@ -68,4 +69,9 @@ test('metrics mapping uses real backend counters without fabricating latency or 
   assert.equal(result.pendingReviewCount, 3);
   assert.equal(result.meanInferenceLatencyMs, 0);
   assert.equal(result.policyAlignmentScore, 0);
+});
+
+test('approval changes UI to approved, never published', () => {
+  assert.equal(reviewUiStatus('approve'), 'approved');
+  assert.equal(reviewUiStatus('reject'), 'rejected');
 });
