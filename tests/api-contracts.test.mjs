@@ -9,6 +9,7 @@ import {
   buildObservationPayload,
   deriveReviewQueue,
   reviewUiStatus,
+  selectObservationDetailItems,
   shouldUseLocalPreviewMutations,
 } from '../src/api/contracts.ts';
 
@@ -40,6 +41,12 @@ test('observation ingest payload binds frontend source data to configured tenant
     priority_hint: 'high',
     metadata: { provider: 'gmail' },
   });
+});
+
+test('observation detail fanout is capped to protect the 60 rpm backend limit', () => {
+  const items = Array.from({ length: 30 }, (_, index) => ({ id: `wi_${index}` }));
+  assert.equal(selectObservationDetailItems(items).length, 8);
+  assert.deepEqual(selectObservationDetailItems(items).map(item => item.id), items.slice(0, 8).map(item => item.id));
 });
 
 test('backend OPEN work item maps to reviewable UI item without invented execution state', () => {
