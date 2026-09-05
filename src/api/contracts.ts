@@ -246,6 +246,8 @@ export function reviewUiStatus(action: 'approve' | 'reject' | 'snooze' | 'cancel
   }
 }
 
-export function shouldUseLocalPreviewMutations(isMockMode: boolean): boolean {
-  return isMockMode;
+export function shouldUseLocalPreviewMutations(isMockMode: boolean, search?: string): boolean {
+  const query = search ?? (typeof window !== 'undefined' ? window.location.search : '');
+  const previewEnabled = new URLSearchParams(query).get('preview') === '1';
+  return isMockMode && previewEnabled;
 }
