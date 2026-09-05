@@ -43,6 +43,19 @@ export interface BackendMetrics {
   by_source?: Record<string, number>;
 }
 
+export interface ObservationIngestInput {
+  source: string;
+  text: string;
+  external_id?: string;
+  actor?: string;
+  occurred_at?: string;
+  metadata?: Record<string, unknown>;
+  title_hint?: string;
+  owner_hint?: string;
+  due_hint?: string;
+  priority_hint?: 'low' | 'medium' | 'high' | 'critical';
+}
+
 function encode(value: string): string {
   return encodeURIComponent(value);
 }
@@ -61,6 +74,13 @@ export function buildRoutes(baseUrl: string, tenantId: string) {
     metrics: `${baseUrl}/v1/metrics`,
     monitoring: `${baseUrl}/v1/monitoring`,
     version: `${baseUrl}/v1/version`,
+  };
+}
+
+export function buildObservationPayload(tenantId: string, input: ObservationIngestInput) {
+  return {
+    tenant_id: tenantId,
+    ...input,
   };
 }
 
