@@ -1,7 +1,8 @@
 import { SheetDataset, SheetRowData } from '../../runtime/runtimeTypes';
 import { getAccessToken } from './googleAuth';
+import { loadPersistedState, savePersistedState, STORAGE_KEYS } from '../../runtime/persistence';
 
-let localSheets: SheetDataset[] = [
+const defaultSheets: SheetDataset[] = [
   {
     spreadsheetId: 'sheet_core_metrics_01',
     title: 'Core System Health & Latency Metrics',
@@ -30,6 +31,12 @@ let localSheets: SheetDataset[] = [
     updatedAt: new Date(Date.now() - 1000 * 60 * 120).toISOString(),
   }
 ];
+
+let localSheets: SheetDataset[] = loadPersistedState(STORAGE_KEYS.SHEETS_DATASETS, defaultSheets);
+
+const persistSheets = () => {
+  savePersistedState(STORAGE_KEYS.SHEETS_DATASETS, localSheets);
+};
 
 export const fetchSheetDataset = async (spreadsheetId?: string): Promise<SheetDataset> => {
   const token = await getAccessToken();
@@ -100,5 +107,6 @@ export const appendSheetRow = async (spreadsheetId: string, rowData: SheetRowDat
   if (sheet) {
     sheet.rows.push(rowData);
     sheet.updatedAt = new Date().toISOString();
+    persistSheets();
   }
 };

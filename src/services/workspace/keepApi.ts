@@ -1,6 +1,7 @@
 import { KeepNoteItem } from '../../runtime/runtimeTypes';
+import { loadPersistedState, savePersistedState, STORAGE_KEYS } from '../../runtime/persistence';
 
-let localKeepNotes: KeepNoteItem[] = [
+const defaultKeepNotes: KeepNoteItem[] = [
   {
     id: 'note_01',
     title: 'Release Readiness Checklist (Sprint 34)',
@@ -43,6 +44,12 @@ let localKeepNotes: KeepNoteItem[] = [
   }
 ];
 
+let localKeepNotes: KeepNoteItem[] = loadPersistedState(STORAGE_KEYS.KEEP_NOTES, defaultKeepNotes);
+
+const persistNotes = () => {
+  savePersistedState(STORAGE_KEYS.KEEP_NOTES, localKeepNotes);
+};
+
 export const fetchKeepNotes = async (): Promise<KeepNoteItem[]> => {
   return [...localKeepNotes];
 };
@@ -54,6 +61,7 @@ export const createKeepNote = async (note: Omit<KeepNoteItem, 'id' | 'updatedAt'
     updatedAt: new Date().toISOString(),
   };
   localKeepNotes.unshift(newNote);
+  persistNotes();
   return newNote;
 };
 
@@ -64,10 +72,12 @@ export const toggleChecklistItem = async (noteId: string, itemId: string): Promi
     if (item) {
       item.done = !item.done;
       note.updatedAt = new Date().toISOString();
+      persistNotes();
     }
   }
 };
 
 export const deleteKeepNote = async (noteId: string): Promise<void> => {
   localKeepNotes = localKeepNotes.filter(n => n.id !== noteId);
+  persistNotes();
 };

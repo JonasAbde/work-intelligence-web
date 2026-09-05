@@ -1,8 +1,9 @@
 import { DriveItem } from '../../runtime/runtimeTypes';
 import { getAccessToken } from './googleAuth';
+import { loadPersistedState, savePersistedState, STORAGE_KEYS } from '../../runtime/persistence';
 
 // Mock initial data for offline / preview before live sign-in
-let localDriveItems: DriveItem[] = [
+const defaultDriveItems: DriveItem[] = [
   {
     id: 'drive_doc_01',
     name: 'Q3 Aftergraph Operational Architecture Spec.gdoc',
@@ -54,6 +55,12 @@ let localDriveItems: DriveItem[] = [
     shared: true,
   }
 ];
+
+let localDriveItems: DriveItem[] = loadPersistedState(STORAGE_KEYS.DRIVE_ITEMS, defaultDriveItems);
+
+const persistDriveItems = () => {
+  savePersistedState(STORAGE_KEYS.DRIVE_ITEMS, localDriveItems);
+};
 
 export const fetchDriveFiles = async (query?: string): Promise<DriveItem[]> => {
   const token = await getAccessToken();
@@ -114,6 +121,7 @@ export const deleteDriveFile = async (fileId: string): Promise<void> => {
     }
   }
   localDriveItems = localDriveItems.filter(item => item.id !== fileId);
+  persistDriveItems();
 };
 
 export const createDriveFile = async (name: string, mimeType: string, content: string): Promise<DriveItem> => {
@@ -142,6 +150,7 @@ export const createDriveFile = async (name: string, mimeType: string, content: s
           webViewLink: f.webViewLink || `https://drive.google.com/file/d/${f.id}/view`,
         };
         localDriveItems.unshift(newItem);
+        persistDriveItems();
         return newItem;
       }
     } catch (err) {
@@ -160,5 +169,6 @@ export const createDriveFile = async (name: string, mimeType: string, content: s
     shared: false,
   };
   localDriveItems.unshift(newItem);
+  persistDriveItems();
   return newItem;
 };

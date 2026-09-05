@@ -1,7 +1,8 @@
 import { GmailMessageItem } from '../../runtime/runtimeTypes';
 import { getAccessToken } from './googleAuth';
+import { loadPersistedState, savePersistedState, STORAGE_KEYS } from '../../runtime/persistence';
 
-let localGmailMessages: GmailMessageItem[] = [
+const defaultGmailMessages: GmailMessageItem[] = [
   {
     id: 'msg_sec_alert_91',
     threadId: 'th_sec_91',
@@ -94,6 +95,12 @@ Top contributors:
     }
   }
 ];
+
+let localGmailMessages: GmailMessageItem[] = loadPersistedState(STORAGE_KEYS.GMAIL_MESSAGES, defaultGmailMessages);
+
+const persistGmailMessages = () => {
+  savePersistedState(STORAGE_KEYS.GMAIL_MESSAGES, localGmailMessages);
+};
 
 export const fetchGmailMessages = async (query?: string): Promise<GmailMessageItem[]> => {
   const token = await getAccessToken();
@@ -215,4 +222,5 @@ export const sendGmailMessage = async (to: string, subject: string, bodyText: st
     labels: ['SENT'],
   };
   localGmailMessages.unshift(newSent);
+  persistGmailMessages();
 };

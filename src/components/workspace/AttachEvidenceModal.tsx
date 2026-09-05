@@ -17,9 +17,11 @@ import {
 export interface AttachEvidenceModalProps {
   isOpen: boolean;
   onClose: () => void;
-  resource: WorkspaceResource | null;
+  resource?: WorkspaceResource | null;
+  resources?: WorkspaceResource[];
   workItems: WorkItem[];
   onSelectWorkItem: (targetItem: WorkItem, resource: WorkspaceResource) => void;
+  onBatchSelectWorkItem?: (targetItem: WorkItem, resources: WorkspaceResource[]) => void;
   onCreateNewWithEvidence: (resource: WorkspaceResource) => void;
 }
 
@@ -27,19 +29,40 @@ export const AttachEvidenceModal: React.FC<AttachEvidenceModalProps> = ({
   isOpen,
   onClose,
   resource,
+  resources = [],
   workItems,
   onSelectWorkItem,
+  onBatchSelectWorkItem,
   onCreateNewWithEvidence,
 }) => {
   const [search, setSearch] = useState('');
 
-  if (!isOpen || !resource) return null;
+  const activeResources: WorkspaceResource[] = resources.length > 0 
+    ? resources 
+    : resource 
+    ? [resource] 
+    : [];
+
+  const primaryResource = activeResources[0] || null;
+
+  if (!isOpen || activeResources.length === 0) return null;
+
+  const isBatch = activeResources.length > 1;
 
   const filteredItems = workItems.filter(item => 
     item.title.toLowerCase().includes(search.toLowerCase()) ||
     item.id.toLowerCase().includes(search.toLowerCase()) ||
     item.description.toLowerCase().includes(search.toLowerCase())
   );
+
+  const handleTargetSelected = (item: WorkItem) => {
+    if (isBatch && onBatchSelectWorkItem) {
+      onBatchSelectWorkItem(item, activeResources);
+    } else if (primaryResource) {
+      onSelectWorkItem(item, primaryResource);
+    }
+    onClose();
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/70 backdrop-blur-xs">
@@ -77,13 +100,27 @@ export const AttachEvidenceModal: React.FC<AttachEvidenceModalProps> = ({
         {/* Selected Resource Preview Ribbon */}
         <div className="px-5 py-3 bg-slate-900/50 border-b border-slate-800 flex items-center justify-between gap-3 text-xs">
           <div className="flex items-center gap-2 min-w-0">
-            <WorkspaceSource provider={resource.provider} kind={resource.kind} size="sm" />
-            <span className="font-semibold text-slate-200 truncate">{resource.title}</span>
+            {isBatch ? (
+              <span className="font-semibold text-slate-200 truncate">
+                Anchoring {activeResources.length} Workspace Resources as Evidence
+              </span>
+            ) : primaryResource ? (
+              <>
+                <WorkspaceSource provider={primaryResource.provider} kind={primaryResource.kind} size="sm" />
+                <span className="font-semibold text-slate-200 truncate">{primaryResource.title}</span>
+              </>
+            ) : null}
           </div>
-          {resource.evidenceHash && (
+          {!isBatch && primaryResource?.evidenceHash && (
             <span className="shrink-0 flex items-center gap-1 font-mono text-[10px] text-cyan-300 bg-cyan-950/60 border border-cyan-800/80 px-2 py-0.5 rounded">
               <ShieldCheck className="w-3 h-3" />
-              {resource.evidenceHash.slice(0, 18)}...
+              {primaryResource.evidenceHash.slice(0, 18)}...
+            </span>
+          )}
+          {isBatch && (
+            <span className="shrink-0 flex items-center gap-1 font-mono text-[10px] text-cyan-300 bg-cyan-950/60 border border-cyan-800/80 px-2 py-0.5 rounded">
+              <ShieldCheck className="w-3 h-3" />
+              {activeResources.length} cryptographically hashed proofs
             </span>
           )}
         </div>
@@ -102,17 +139,19 @@ export const AttachEvidenceModal: React.FC<AttachEvidenceModalProps> = ({
             />
           </div>
 
-          <InHouseButton
-            variant="outline"
-            size="sm"
-            icon={Plus}
-            onClick={() => {
-              onCreateNewWithEvidence(resource);
-              onClose();
-            }}
-          >
-            New Work Item
-          </InHouseButton>
+          {!isBatch && primaryResource && (
+            <InHouseButton
+              variant="outline"
+              size="sm"
+              icon={Plus}
+              onClick={() => {
+                onCreateNewWithEvidence(primaryResource);
+                onClose();
+              }}
+            >
+              New Work Item
+            </InHouseButton>
+          )}
         </div>
 
         {/* Work Items List */}
@@ -121,26 +160,25 @@ export const AttachEvidenceModal: React.FC<AttachEvidenceModalProps> = ({
             <div className="p-8 text-center text-xs text-slate-500 space-y-2">
               <FileText className="w-8 h-8 text-slate-600 mx-auto stroke-1" />
               <p>No work items found matching "{search}".</p>
-              <InHouseButton
-                variant="primary"
-                size="sm"
-                icon={Plus}
-                onClick={() => {
-                  onCreateNewWithEvidence(resource);
-                  onClose();
-                }}
-              >
-                Create New Work Item From This Resource
-              </InHouseButton>
+              {!isBatch && primaryResource && (
+                <InHouseButton
+                  variant="primary"
+                  size="sm"
+                  icon={Plus}
+                  onClick={() => {
+                    onCreateNewWithEvidence(primaryResource);
+                    onClose();
+                  }}
+                >
+                  Create New Work Item From This Resource
+                </InHouseButton>
+              )}
             </div>
           ) : (
             filteredItems.map(item => (
               <div
                 key={item.id}
-                onClick={() => {
-                  onSelectWorkItem(item, resource);
-                  onClose();
-                }}
+                onClick={() => handleTargetSelected(item)}
                 className="group p-3.5 rounded-xl border border-slate-800/80 bg-[#0c101d] hover:bg-slate-900/80 hover:border-cyan-500/40 transition-all cursor-pointer flex items-center justify-between gap-4"
               >
                 <div className="flex-1 min-w-0">

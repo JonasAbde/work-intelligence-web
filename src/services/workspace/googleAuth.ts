@@ -32,9 +32,39 @@ provider.addScope('https://www.googleapis.com/auth/spreadsheets.readonly');
 provider.addScope('https://www.googleapis.com/auth/documents');
 provider.addScope('https://www.googleapis.com/auth/documents.readonly');
 
-// In-memory token cache (NEVER localStorage per guidelines)
+// Session token storage key (cleared automatically on tab close)
+const SESSION_TOKEN_KEY = 'aftergraph_ws_session_token_v1';
 let cachedAccessToken: string | null = null;
 let isSigningIn = false;
+
+export const isAuthSigningIn = (): boolean => isSigningIn;
+
+export const getStoredSessionToken = (): string | null => {
+  if (cachedAccessToken) return cachedAccessToken;
+  try {
+    const stored = sessionStorage.getItem(SESSION_TOKEN_KEY);
+    if (stored) {
+      cachedAccessToken = stored;
+      return stored;
+    }
+  } catch {
+    // Storage access may be blocked in some sandboxes
+  }
+  return null;
+};
+
+export const setStoredSessionToken = (token: string | null) => {
+  cachedAccessToken = token;
+  try {
+    if (token) {
+      sessionStorage.setItem(SESSION_TOKEN_KEY, token);
+    } else {
+      sessionStorage.removeItem(SESSION_TOKEN_KEY);
+    }
+  } catch {
+    // Storage access may be blocked
+  }
+};
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
@@ -42,14 +72,15 @@ export const initAuth = (
 ) => {
   return onAuthStateChanged(auth, async (user: User | null) => {
     if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
-      } else if (!isSigningIn) {
-        cachedAccessToken = null;
-        if (onAuthFailure) onAuthFailure();
+      const token = getStoredSessionToken();
+      if (token) {
+        if (onAuthSuccess) onAuthSuccess(user, token);
+      } else {
+        // User is authenticated in Firebase, but Google access token needs to be acquired
+        if (onAuthSuccess) onAuthSuccess(user, '');
       }
     } else {
-      cachedAccessToken = null;
+      setStoredSessionToken(null);
       if (onAuthFailure) onAuthFailure();
     }
   });
@@ -60,11 +91,12 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     isSigningIn = true;
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
-    if (!credential?.accessToken) {
-      throw new Error('No access token returned from Google Auth');
+    const token = credential?.accessToken || '';
+    if (!token) {
+      throw new Error('Google did not return an access token. Please check OAuth credentials.');
     }
-    cachedAccessToken = credential.accessToken;
-    return { user: result.user, accessToken: cachedAccessToken };
+    setStoredSessionToken(token);
+    return { user: result.user, accessToken: token };
   } catch (error: any) {
     console.error('Sign in error:', error);
     throw error;
@@ -74,12 +106,12 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
 };
 
 export const getAccessToken = async (): Promise<string | null> => {
-  return cachedAccessToken;
+  return getStoredSessionToken();
 };
 
 export const logoutGoogle = async () => {
   await signOut(auth);
-  cachedAccessToken = null;
+  setStoredSessionToken(null);
 };
 
 export const getAppletOAuthClientId = () => {

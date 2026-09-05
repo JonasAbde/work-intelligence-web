@@ -1,7 +1,8 @@
 import { DocDocumentItem } from '../../runtime/runtimeTypes';
 import { getAccessToken } from './googleAuth';
+import { loadPersistedState, savePersistedState, STORAGE_KEYS } from '../../runtime/persistence';
 
-let localDocs: DocDocumentItem[] = [
+const defaultDocs: DocDocumentItem[] = [
   {
     id: 'doc_arch_spec_01',
     title: 'Q3 Aftergraph Operational Architecture Spec',
@@ -43,6 +44,12 @@ let localDocs: DocDocumentItem[] = [
     ]
   }
 ];
+
+let localDocs: DocDocumentItem[] = loadPersistedState(STORAGE_KEYS.DOCS_ITEMS, defaultDocs);
+
+const persistDocs = () => {
+  savePersistedState(STORAGE_KEYS.DOCS_ITEMS, localDocs);
+};
 
 export const fetchDocs = async (): Promise<DocDocumentItem[]> => {
   return [...localDocs];
@@ -92,6 +99,7 @@ export const createGoogleDoc = async (title: string, initialBody: string): Promi
           sections: [{ heading: 'Generated Content', body: initialBody }],
         };
         localDocs.unshift(newDoc);
+        persistDocs();
         return newDoc;
       }
     } catch (err) {
@@ -109,5 +117,6 @@ export const createGoogleDoc = async (title: string, initialBody: string): Promi
     sections: [{ heading: 'Document Body', body: initialBody }],
   };
   localDocs.unshift(localDoc);
+  persistDocs();
   return localDoc;
 };

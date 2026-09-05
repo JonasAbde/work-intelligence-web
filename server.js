@@ -19,18 +19,32 @@ app.use('/api', createProxyMiddleware({
   pathRewrite: {
     '^/api': '' // Rewrite /api to match backend expectations (adjust if backend expects /api)
   },
+  on: {
+    error: (err, req, res) => {
+      console.error('Proxy connection error to real backend:', err.message);
+      if (res && 'writeHead' in res && !res.headersSent) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ 
+          error: 'Backend unavailable', 
+          details: 'The BFF could not reach the authoritative Work Intelligence API.' 
+        }));
+      }
+    }
+  },
   onError: (err, req, res) => {
     console.error('Proxy connection error to real backend:', err.message);
-    res.status(503).json({ 
-      error: 'Backend unavailable', 
-      details: 'The BFF could not reach the authoritative Work Intelligence API.' 
-    });
+    if (res && 'status' in res && !res.headersSent) {
+      res.status(503).json({ 
+        error: 'Backend unavailable', 
+        details: 'The BFF could not reach the authoritative Work Intelligence API.' 
+      });
+    }
   }
 }));
 
 // Serve static React production build
 app.use(express.static(path.join(__dirname, 'dist')));
-app.get('*', (req, res) => {
+app.get('*all', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 

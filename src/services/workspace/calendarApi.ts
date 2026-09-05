@@ -1,7 +1,8 @@
 import { CalendarEventItem } from '../../runtime/runtimeTypes';
 import { getAccessToken } from './googleAuth';
+import { loadPersistedState, savePersistedState, STORAGE_KEYS } from '../../runtime/persistence';
 
-let localCalendarEvents: CalendarEventItem[] = [
+const defaultCalendarEvents: CalendarEventItem[] = [
   {
     id: 'cal_event_01',
     title: 'Root Key Rotation Review & Blast Radius Signoff',
@@ -43,6 +44,12 @@ let localCalendarEvents: CalendarEventItem[] = [
     htmlLink: 'https://calendar.google.com/calendar/event?eid=cal_event_03',
   }
 ];
+
+let localCalendarEvents: CalendarEventItem[] = loadPersistedState(STORAGE_KEYS.CALENDAR_EVENTS, defaultCalendarEvents);
+
+const persistCalendarEvents = () => {
+  savePersistedState(STORAGE_KEYS.CALENDAR_EVENTS, localCalendarEvents);
+};
 
 export const fetchCalendarEvents = async (): Promise<CalendarEventItem[]> => {
   const token = await getAccessToken();
@@ -144,6 +151,7 @@ export const createCalendarEvent = async (event: {
     htmlLink: 'https://calendar.google.com',
   };
   localCalendarEvents.push(newLocalItem);
+  persistCalendarEvents();
   return newLocalItem;
 };
 
@@ -160,4 +168,5 @@ export const deleteCalendarEvent = async (eventId: string): Promise<void> => {
     }
   }
   localCalendarEvents = localCalendarEvents.filter(e => e.id !== eventId);
+  persistCalendarEvents();
 };

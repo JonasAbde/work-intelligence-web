@@ -35,32 +35,78 @@ import { ComponentRegistryView } from './components/dev/ComponentRegistryView';
 import { TelemetryHUD } from './components/workspace/TelemetryHUD';
 import { AttachEvidenceModal } from './components/workspace/AttachEvidenceModal';
 import { WorkspaceResource } from './runtime/workspaceResource';
+import { workspaceRuntime } from './runtime/workspaceService';
 import { GmailMessageItem, KeepNoteItem, DriveItem, DensityMode } from './runtime/runtimeTypes';
+import { 
+  STORAGE_KEYS, 
+  loadPersistedState, 
+  savePersistedState 
+} from './runtime/persistence';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<ViewTab>('home');
   const [isTelemetryOpen, setIsTelemetryOpen] = useState(false);
-  const [density, setDensity] = useState<DensityMode>('comfortable');
-  const [activeScenario, setActiveScenario] = useState<AppScenario>('normal_day');
+  const [density, setDensity] = useState<DensityMode>(() => 
+    loadPersistedState<DensityMode>(STORAGE_KEYS.DENSITY, 'comfortable')
+  );
+
+  const initialScenario = loadPersistedState<AppScenario>(STORAGE_KEYS.CURRENT_SCENARIO, 'normal_day');
+  const [activeScenario, setActiveScenario] = useState<AppScenario>(initialScenario);
   
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
   const [healthResult, setHealthResult] = useState<HealthCheckResult | null>(null);
   const [isCheckingBackend, setIsCheckingBackend] = useState(false);
   const [isMockMode, setIsMockMode] = useState<boolean>(true);
 
-  // Initialize data with initial scenario
-  const initialData = getScenarioData('normal_day');
-  const [workItems, setWorkItems] = useState<WorkItem[]>(initialData.workItems);
-  const [observations, setObservations] = useState<Observation[]>(initialData.observations);
-  const [reviewQueue, setReviewQueue] = useState<ReviewQueueItem[]>(initialData.reviewQueue);
-  const [integrations, setIntegrations] = useState<IntegrationStatus[]>(initialData.integrations);
-  const [, setMetrics] = useState<SystemMetrics>(initialData.metrics);
+  // Initialize data with initial scenario or persisted state
+  const initialData = getScenarioData(initialScenario);
+  const [workItems, setWorkItems] = useState<WorkItem[]>(() => 
+    loadPersistedState<WorkItem[]>(STORAGE_KEYS.WORK_ITEMS, initialData.workItems)
+  );
+  const [observations, setObservations] = useState<Observation[]>(() => 
+    loadPersistedState<Observation[]>(STORAGE_KEYS.OBSERVATIONS, initialData.observations)
+  );
+  const [reviewQueue, setReviewQueue] = useState<ReviewQueueItem[]>(() => 
+    loadPersistedState<ReviewQueueItem[]>(STORAGE_KEYS.REVIEW_QUEUE, initialData.reviewQueue)
+  );
+  const [integrations, setIntegrations] = useState<IntegrationStatus[]>(() => 
+    loadPersistedState<IntegrationStatus[]>(STORAGE_KEYS.INTEGRATIONS, initialData.integrations)
+  );
+  const [, setMetrics] = useState<SystemMetrics>(() => 
+    loadPersistedState<SystemMetrics>(STORAGE_KEYS.METRICS, initialData.metrics)
+  );
 
   const [selectedWorkItem, setSelectedWorkItem] = useState<WorkItem | null>(null);
   const [isInspectorOpen, setIsInspectorOpen] = useState<boolean>(false);
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState<boolean>(false);
   const [isConnectionModalOpen, setIsConnectionModalOpen] = useState<boolean>(false);
   const [evidenceTargetResource, setEvidenceTargetResource] = useState<WorkspaceResource | null>(null);
+  const [batchEvidenceTargetResources, setBatchEvidenceTargetResources] = useState<WorkspaceResource[]>([]);
+
+  // Sync state to persistent storage
+  useEffect(() => {
+    savePersistedState(STORAGE_KEYS.WORK_ITEMS, workItems);
+  }, [workItems]);
+
+  useEffect(() => {
+    savePersistedState(STORAGE_KEYS.OBSERVATIONS, observations);
+  }, [observations]);
+
+  useEffect(() => {
+    savePersistedState(STORAGE_KEYS.REVIEW_QUEUE, reviewQueue);
+  }, [reviewQueue]);
+
+  useEffect(() => {
+    savePersistedState(STORAGE_KEYS.INTEGRATIONS, integrations);
+  }, [integrations]);
+
+  useEffect(() => {
+    savePersistedState(STORAGE_KEYS.CURRENT_SCENARIO, activeScenario);
+  }, [activeScenario]);
+
+  useEffect(() => {
+    savePersistedState(STORAGE_KEYS.DENSITY, density);
+  }, [density]);
 
   // Toast state with Undo support
   const [toast, setToast] = useState<ToastMessage | null>(null);
@@ -76,6 +122,13 @@ export default function App() {
     setMetrics(data.metrics);
     setSelectedWorkItem(null);
     setIsInspectorOpen(false);
+
+    savePersistedState(STORAGE_KEYS.CURRENT_SCENARIO, newScenario);
+    savePersistedState(STORAGE_KEYS.WORK_ITEMS, data.workItems);
+    savePersistedState(STORAGE_KEYS.OBSERVATIONS, data.observations);
+    savePersistedState(STORAGE_KEYS.REVIEW_QUEUE, data.reviewQueue);
+    savePersistedState(STORAGE_KEYS.INTEGRATIONS, data.integrations);
+    savePersistedState(STORAGE_KEYS.METRICS, data.metrics);
 
     setToast({
       id: `scen-${Date.now()}`,
@@ -576,6 +629,8 @@ export default function App() {
       return w;
     }));
 
+    workspaceRuntime.updateResourceLink(resource.id, targetItem.id);
+
     setSelectedWorkItem(targetItem);
     setIsInspectorOpen(true);
 
@@ -587,6 +642,47 @@ export default function App() {
     });
   };
 
+  const handleBatchAttachResourcesToTarget = (targetItem: WorkItem, resources: WorkspaceResource[]) => {
+    const newEvidences = resources.map(resource => {
+      const summaryText = resource.summary || resource.subtitle || resource.title;
+      return {
+        id: `ev-${resource.provider}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        type: 'document' as const,
+        title: resource.title,
+        snippet: summaryText.slice(0, 240),
+        timestamp: resource.modifiedAt || new Date().toISOString(),
+        author: resource.actor?.name || `${resource.provider} User`,
+        sourceUri: resource.provenanceUri || `https://${resource.provider}.google.com`,
+        hash: resource.evidenceHash || `sha256:${resource.provider}_${resource.id}`,
+        confidenceContribution: 0.99,
+      };
+    });
+
+    setWorkItems(prev => prev.map(w => {
+      if (w.id === targetItem.id) {
+        return {
+          ...w,
+          evidence: [...w.evidence, ...newEvidences],
+        };
+      }
+      return w;
+    }));
+
+    resources.forEach(res => {
+      workspaceRuntime.updateResourceLink(res.id, targetItem.id);
+    });
+
+    setSelectedWorkItem(targetItem);
+    setIsInspectorOpen(true);
+
+    setToast({
+      id: `att-batch-${Date.now()}`,
+      title: 'Batch Evidence Anchored',
+      description: `Bound ${resources.length} cryptographic proofs to ${targetItem.id}.`,
+      duration: 4500,
+    });
+  };
+
   // Unified Resource -> Evidence Attachment
   const handleAttachEvidenceFromResource = (resource: WorkspaceResource) => {
     if (!selectedWorkItem) {
@@ -594,6 +690,29 @@ export default function App() {
       return;
     }
     handleAttachResourceToTarget(selectedWorkItem, resource);
+  };
+
+  const handleBatchAttachEvidence = (resources: WorkspaceResource[]) => {
+    if (resources.length === 0) return;
+    if (selectedWorkItem) {
+      handleBatchAttachResourcesToTarget(selectedWorkItem, resources);
+    } else {
+      setBatchEvidenceTargetResources(resources);
+    }
+  };
+
+  const handleUpdateWorkItem = (updated: WorkItem) => {
+    setWorkItems(prev => prev.map(w => w.id === updated.id ? updated : w));
+    setReviewQueue(prev => prev.map(r => r.workItem.id === updated.id ? { ...r, workItem: updated } : r));
+    if (selectedWorkItem?.id === updated.id) {
+      setSelectedWorkItem(updated);
+    }
+    setToast({
+      id: `upd-${updated.id}`,
+      title: 'Work Item Updated',
+      description: `Saved edits for ${updated.id}.`,
+      duration: 3000,
+    });
   };
 
   return (
@@ -669,6 +788,7 @@ export default function App() {
                   setSelectedWorkItem(item);
                   setIsInspectorOpen(true);
                 }}
+                onUpdateWorkItem={handleUpdateWorkItem}
               />
             )}
 
@@ -729,7 +849,7 @@ export default function App() {
                   resources.forEach(res => handleCreateWorkItemFromResource(res));
                 }}
                 onBatchAttachEvidence={(resources) => {
-                  resources.forEach(res => handleAttachEvidenceFromResource(res));
+                  handleBatchAttachEvidence(resources);
                 }}
                 onNavigateToWorkItem={(id) => {
                   const found = workItems.find(w => w.id === id);
@@ -906,17 +1026,27 @@ export default function App() {
 
         {/* 8. Attach Evidence Target Selector Modal */}
         <AttachEvidenceModal
-          isOpen={evidenceTargetResource !== null}
-          onClose={() => setEvidenceTargetResource(null)}
+          isOpen={evidenceTargetResource !== null || batchEvidenceTargetResources.length > 0}
+          onClose={() => {
+            setEvidenceTargetResource(null);
+            setBatchEvidenceTargetResources([]);
+          }}
           resource={evidenceTargetResource}
+          resources={batchEvidenceTargetResources}
           workItems={workItems}
           onSelectWorkItem={(item, res) => {
             handleAttachResourceToTarget(item, res);
             setEvidenceTargetResource(null);
+            setBatchEvidenceTargetResources([]);
+          }}
+          onBatchSelectWorkItem={(item, resList) => {
+            handleBatchAttachResourcesToTarget(item, resList);
+            setBatchEvidenceTargetResources([]);
           }}
           onCreateNewWithEvidence={(res) => {
             handleCreateWorkItemFromResource(res);
             setEvidenceTargetResource(null);
+            setBatchEvidenceTargetResources([]);
           }}
         />
       </div>

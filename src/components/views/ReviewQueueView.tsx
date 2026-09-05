@@ -21,13 +21,15 @@ interface ReviewQueueViewProps {
   onApprove: (id: string) => void;
   onReject: (id: string, reason: string) => void;
   onSelectWorkItem: (item: WorkItem) => void;
+  onUpdateWorkItem?: (item: WorkItem) => void;
 }
 
 export const ReviewQueueView: React.FC<ReviewQueueViewProps> = ({
   reviewQueue,
   onApprove,
   onReject,
-  onSelectWorkItem
+  onSelectWorkItem,
+  onUpdateWorkItem,
 }) => {
   const [selectedReviewId, setSelectedReviewId] = useState<string>(reviewQueue[0]?.id || '');
   const [showTechnicalDetails, setShowTechnicalDetails] = useState<boolean>(false);
@@ -55,7 +57,17 @@ export const ReviewQueueView: React.FC<ReviewQueueViewProps> = ({
   };
 
   const handleSaveEdit = () => {
-    currentReview.workItem.title = editedTitle;
+    if (editedTitle.trim()) {
+      const updated = {
+        ...currentReview.workItem,
+        title: editedTitle.trim(),
+      };
+      if (onUpdateWorkItem) {
+        onUpdateWorkItem(updated);
+      } else {
+        currentReview.workItem.title = editedTitle.trim();
+      }
+    }
     setIsEditing(false);
   };
 
