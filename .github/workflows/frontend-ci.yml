@@ -14,10 +14,24 @@ permissions:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 25
+    env:
+      BACKEND_SHA: 0b4de81cb568120cba87f106f1ce7ad962048197
+      AFTERGRAPH_API_TOKEN: ci-compatibility-token
+      WORK_INTELLIGENCE_API_URL: http://127.0.0.1:8087
+      VITE_WORK_INTELLIGENCE_TENANT_ID: default
+      VITE_WORK_INTELLIGENCE_REVIEW_ACTOR: compatibility-gate
+
     steps:
-      - name: Checkout
+      - name: Checkout web
         uses: actions/checkout@v4
+
+      - name: Checkout pinned Work Intelligence V2
+        uses: actions/checkout@v4
+        with:
+          repository: Aftergraph/work-intelligence-v2
+          ref: ${{ env.BACKEND_SHA }}
+          path: backend
 
       - name: Setup Node 22
         uses: actions/setup-node@v4
@@ -25,11 +39,70 @@ jobs:
           node-version: '22'
           cache: npm
 
-      - name: Install dependencies
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/pyproject.toml
+
+      - name: Install web dependencies
         run: npm ci
 
-      - name: Contract tests
+      - name: Install backend
+        run: python -m pip install -e './backend[dev]'
+
+      - name: Verify pinned backend baseline
+        working-directory: backend
+        run: pytest -q
+
+      - name: Frontend unit and contract tests
         run: npm test
 
       - name: Production build
         run: npm run build
+
+      - name: Start pinned backend
+        run: |
+          aftergraph-work-intelligence --db /tmp/work-intelligence-compat.db > /tmp/work-intelligence-backend.log 2>&1 &
+          echo $! > /tmp/work-intelligence-backend.pid
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8087/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/work-intelligence-backend.log
+          exit 1
+
+      - name: Start production BFF
+        run: |
+          PORT=3000 npm start > /tmp/work-intelligence-web.log 2>&1 &
+          echo $! > /tmp/work-intelligence-web.pid
+          for attempt in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:3000/api/healthz >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          cat /tmp/work-intelligence-web.log
+          exit 1
+
+      - name: Cross-repo live contract test through production BFF
+        env:
+          LIVE_BACKEND_URL: http://127.0.0.1:3000/api
+        run: node --experimental-strip-types --test tests/backend-live-contract.test.mjs
+
+      - name: Capture runtime diagnostics
+        if: failure()
+        run: |
+          echo '--- backend log ---'
+          cat /tmp/work-intelligence-backend.log 2>/dev/null || true
+          echo '--- web log ---'
+          cat /tmp/work-intelligence-web.log 2>/dev/null || true
+
+      - name: Stop runtime processes
+        if: always()
+        run: |
+          test -f /tmp/work-intelligence-web.pid && kill "$(cat /tmp/work-intelligence-web.pid)" 2>/dev/null || true
+          test -f /tmp/work-intelligence-backend.pid && kill "$(cat /tmp/work-intelligence-backend.pid)" 2>/dev/null || true
