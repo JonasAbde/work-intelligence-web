@@ -1,8 +1,12 @@
 import { WorkItem, Observation, ConnectionState, ReviewQueueItem, IntegrationStatus, SystemMetrics } from '../types';
 import { mockWorkItems, mockObservations, mockReviewQueue, mockIntegrations, mockMetrics } from '../mock/fixtures';
 import {
+  BackendAllowedActions,
   BackendMetrics,
   BackendObservation,
+  BackendReadiness,
+  BackendTransition,
+  BackendUsage,
   BackendWorkItem,
   ObservationIngestInput,
   buildObservationPayload,
@@ -12,7 +16,6 @@ import {
   mapBackendMetrics,
   mapBackendObservation,
   mapBackendWorkItem,
-  selectObservationDetailItems,
 } from './contracts';
 
 const BASE_URL = '/api';
@@ -25,9 +28,20 @@ interface BackendWorkItemListResponse {
   work_items: BackendWorkItem[];
 }
 
-interface BackendWorkItemDetailResponse {
-  work_item: BackendWorkItem;
+interface BackendObservationListResponse {
+  count: number;
   observations: BackendObservation[];
+}
+
+interface BackendTransitionListResponse {
+  work_item_id: string;
+  count: number;
+  transitions: BackendTransition[];
+}
+
+interface BackendPublicationListResponse {
+  work_item_id: string;
+  count: number;
   publications: Array<Record<string, unknown>>;
 }
 
@@ -57,16 +71,6 @@ async function fetchBackendWorkItems(): Promise<BackendWorkItem[]> {
       });
   }
   return inFlightWorkItems;
-}
-
-async function fetchBackendDetails(items: BackendWorkItem[]): Promise<BackendWorkItemDetailResponse[]> {
-  return Promise.all(
-    selectObservationDetailItems(items).map(item =>
-      fetch(routes.workItem(item.id)).then(res =>
-        readJson<BackendWorkItemDetailResponse>(res, `Failed to fetch work item ${item.id}`)
-      )
-    )
-  );
 }
 
 export interface HealthCheckResult {
@@ -116,14 +120,42 @@ export const apiClient = {
         };
       }
 
-      const health = await res.json().catch(() => null) as { status?: string; service?: string } | null;
-      if (!health || health.status !== 'ok' || health.service !== 'aftergraph-work-intelligence') {
+      const health = await res.json().catch(() => null) as {
+        status?: string;
+        service?: string;
+        database?: string;
+        task_queue?: string;
+      } | null;
+
+      if (!health || health.service !== 'aftergraph-work-intelligence') {
         return {
           state: 'degraded',
           statusCode: res.status,
           latencyMs,
           apiUrl: BASE_URL,
           errorMessage: 'Unexpected health response from configured backend',
+          timestamp,
+        };
+      }
+
+      if (health.status === 'degraded') {
+        return {
+          state: 'degraded',
+          statusCode: res.status,
+          latencyMs,
+          apiUrl: BASE_URL,
+          errorMessage: 'Backend is reachable but one or more dependencies are degraded',
+          timestamp,
+        };
+      }
+
+      if (health.status !== 'ok') {
+        return {
+          state: 'degraded',
+          statusCode: res.status,
+          latencyMs,
+          apiUrl: BASE_URL,
+          errorMessage: `Backend returned health state ${health.status || 'unknown'}`,
           timestamp,
         };
       }
@@ -149,22 +181,53 @@ export const apiClient = {
 
   async getObservations(isMockMode: boolean): Promise<Observation[]> {
     if (isMockMode) return [...mockObservations];
-    const items = await fetchBackendWorkItems();
-    const details = await fetchBackendDetails(items);
-    return details.flatMap(detail =>
-      detail.observations.map(observation => mapBackendObservation(observation, detail.work_item.id))
-    );
+    const data = await fetch(routes.observationList(100))
+      .then(res => readJson<BackendObservationListResponse>(res, 'Failed to fetch observations'));
+    return data.observations.map(observation => mapBackendObservation(observation));
   },
 
   async getReviewQueue(isMockMode: boolean): Promise<ReviewQueueItem[]> {
     if (isMockMode) return [...mockReviewQueue];
-    const items = (await fetchBackendWorkItems()).map(mapBackendWorkItem);
-    return deriveReviewQueue(items);
+    const res = await fetch(routes.workItems(100, 'OPEN'));
+    const data = await readJson<BackendWorkItemListResponse>(res, 'Failed to fetch review queue');
+    return deriveReviewQueue(data.work_items.map(mapBackendWorkItem));
   },
 
   async getIntegrations(isMockMode: boolean): Promise<IntegrationStatus[]> {
     if (isMockMode) return [...mockIntegrations];
     return [];
+  },
+
+  async getReadiness(isMockMode: boolean): Promise<BackendReadiness | null> {
+    if (isMockMode) return null;
+    const res = await fetch(routes.readiness);
+    return readJson<BackendReadiness>(res, 'Failed to fetch backend readiness');
+  },
+
+  async getUsage(isMockMode: boolean): Promise<BackendUsage | null> {
+    if (isMockMode) return null;
+    const res = await fetch(routes.usage);
+    return readJson<BackendUsage>(res, 'Failed to fetch backend usage');
+  },
+
+  async getAllowedActions(id: string, isMockMode: boolean): Promise<BackendAllowedActions | null> {
+    if (isMockMode) return null;
+    const res = await fetch(routes.actions(id));
+    return readJson<BackendAllowedActions>(res, `Failed to fetch allowed actions for ${id}`);
+  },
+
+  async getTransitions(id: string, isMockMode: boolean): Promise<BackendTransition[]> {
+    if (isMockMode) return [];
+    const res = await fetch(routes.transitions(id));
+    const data = await readJson<BackendTransitionListResponse>(res, `Failed to fetch transitions for ${id}`);
+    return data.transitions;
+  },
+
+  async getPublications(id: string, isMockMode: boolean): Promise<Array<Record<string, unknown>>> {
+    if (isMockMode) return [];
+    const res = await fetch(routes.publications(id));
+    const data = await readJson<BackendPublicationListResponse>(res, `Failed to fetch publications for ${id}`);
+    return data.publications;
   },
 
   async getMetrics(isMockMode: boolean): Promise<SystemMetrics> {
@@ -194,7 +257,7 @@ export const apiClient = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildReviewPayload('approve', REVIEW_ACTOR, 'Approved in Work Intelligence Web')),
     });
-    if (!res.ok) throw new Error(`Failed to approve work item (${res.status})`);
+    await readJson<Record<string, unknown>>(res, 'Failed to approve work item');
     return true;
   },
 
@@ -205,7 +268,7 @@ export const apiClient = {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildReviewPayload('reject', REVIEW_ACTOR, reason)),
     });
-    if (!res.ok) throw new Error(`Failed to reject work item (${res.status})`);
+    await readJson<Record<string, unknown>>(res, 'Failed to reject work item');
     return true;
   },
 
