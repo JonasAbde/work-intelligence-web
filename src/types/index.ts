@@ -115,7 +115,7 @@ export interface WorkItem {
     inferredIntent: string;
   };
   resolution: {
-    decisionType: 'autonomous_created' | 'merged_candidate' | 'policy_promoted' | 'human_created';
+    decisionType: 'backend_resolved' | 'autonomous_created' | 'merged_candidate' | 'policy_promoted' | 'human_created';
     details: string;
   };
   policies: PolicyRule[];
