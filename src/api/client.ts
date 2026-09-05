@@ -2,13 +2,16 @@ import { WorkItem, Observation, ConnectionState, ReviewQueueItem, IntegrationSta
 import { mockWorkItems, mockObservations, mockReviewQueue, mockIntegrations, mockMetrics } from '../mock/fixtures';
 import {
   BackendAllowedActions,
+  BackendEvidenceEnvelope,
   BackendMetrics,
   BackendObservation,
+  BackendPublication,
   BackendReadiness,
   BackendTransition,
   BackendUsage,
   BackendWorkItem,
   ObservationIngestInput,
+  applyBackendDetail,
   buildObservationPayload,
   buildReviewPayload,
   buildRoutes,
@@ -33,6 +36,12 @@ interface BackendObservationListResponse {
   observations: BackendObservation[];
 }
 
+interface BackendWorkItemDetailResponse {
+  work_item: BackendWorkItem;
+  observations: BackendObservation[];
+  publications: BackendPublication[];
+}
+
 interface BackendTransitionListResponse {
   work_item_id: string;
   count: number;
@@ -42,7 +51,7 @@ interface BackendTransitionListResponse {
 interface BackendPublicationListResponse {
   work_item_id: string;
   count: number;
-  publications: Array<Record<string, unknown>>;
+  publications: BackendPublication[];
 }
 
 export interface BackendIngestResult {
@@ -80,6 +89,8 @@ export interface HealthCheckResult {
   apiUrl: string;
   errorMessage?: string;
   timestamp: string;
+  apiVersion?: string;
+  appVersion?: string;
 }
 
 export const apiClient = {
@@ -97,68 +108,38 @@ export const apiClient = {
       clearTimeout(timeoutId);
 
       const latencyMs = Math.round(performance.now() - start);
+      const apiVersion = res.headers.get('X-API-Version') || undefined;
+      const appVersion = res.headers.get('X-App-Version') || undefined;
       if (res.status === 401 || res.status === 403) {
         return {
-          state: 'unauthorized',
-          statusCode: res.status,
-          latencyMs,
-          apiUrl: BASE_URL,
-          errorMessage: 'Authentication token missing or rejected by Aftergraph backend',
-          timestamp,
+          state: 'unauthorized', statusCode: res.status, latencyMs, apiUrl: BASE_URL,
+          errorMessage: 'Authentication token missing or rejected by Aftergraph backend', timestamp, apiVersion, appVersion,
         };
       }
 
       const contentType = res.headers.get('content-type') || '';
       if (!res.ok || contentType.includes('text/html')) {
         return {
-          state: 'unavailable',
-          statusCode: res.status,
-          latencyMs,
-          apiUrl: BASE_URL,
-          errorMessage: 'Authoritative backend service unreachable at configured endpoint',
-          timestamp,
+          state: 'unavailable', statusCode: res.status, latencyMs, apiUrl: BASE_URL,
+          errorMessage: 'Authoritative backend service unreachable at configured endpoint', timestamp, apiVersion, appVersion,
         };
       }
 
-      const health = await res.json().catch(() => null) as {
-        status?: string;
-        service?: string;
-      } | null;
-
+      const health = await res.json().catch(() => null) as { status?: string; service?: string } | null;
       if (!health || health.service !== 'aftergraph-work-intelligence') {
         return {
-          state: 'degraded',
-          statusCode: res.status,
-          latencyMs,
-          apiUrl: BASE_URL,
-          errorMessage: 'Unexpected health response from configured backend',
-          timestamp,
+          state: 'degraded', statusCode: res.status, latencyMs, apiUrl: BASE_URL,
+          errorMessage: 'Unexpected health response from configured backend', timestamp, apiVersion, appVersion,
         };
       }
-
-      if (health.status === 'degraded') {
+      if (health.status === 'degraded' || health.status !== 'ok') {
         return {
-          state: 'degraded',
-          statusCode: res.status,
-          latencyMs,
-          apiUrl: BASE_URL,
-          errorMessage: 'Backend is reachable but one or more dependencies are degraded',
-          timestamp,
+          state: 'degraded', statusCode: res.status, latencyMs, apiUrl: BASE_URL,
+          errorMessage: `Backend health state: ${health.status || 'unknown'}`, timestamp, apiVersion, appVersion,
         };
       }
 
-      if (health.status !== 'ok') {
-        return {
-          state: 'degraded',
-          statusCode: res.status,
-          latencyMs,
-          apiUrl: BASE_URL,
-          errorMessage: `Backend returned health state ${health.status || 'unknown'}`,
-          timestamp,
-        };
-      }
-
-      return { state: 'connected', statusCode: res.status, latencyMs, apiUrl: BASE_URL, timestamp };
+      return { state: 'connected', statusCode: res.status, latencyMs, apiUrl: BASE_URL, timestamp, apiVersion, appVersion };
     } catch (err: unknown) {
       return {
         state: 'unavailable',
@@ -173,6 +154,26 @@ export const apiClient = {
   async getWorkItems(isMockMode: boolean): Promise<WorkItem[]> {
     if (isMockMode) return [...mockWorkItems];
     return (await fetchBackendWorkItems()).map(mapBackendWorkItem);
+  },
+
+  async getWorkItem(id: string, isMockMode: boolean): Promise<WorkItem | null> {
+    if (isMockMode) return mockWorkItems.find(item => item.id === id) ?? null;
+
+    const [detail, evidence, transitions, publications, actions] = await Promise.all([
+      readJson<BackendWorkItemDetailResponse>(await fetch(routes.workItem(id)), `Failed to fetch work item ${id}`),
+      readJson<BackendEvidenceEnvelope>(await fetch(routes.evidence(id)), `Failed to fetch evidence for ${id}`),
+      readJson<BackendTransitionListResponse>(await fetch(routes.transitions(id)), `Failed to fetch transitions for ${id}`),
+      readJson<BackendPublicationListResponse>(await fetch(routes.publications(id)), `Failed to fetch publications for ${id}`),
+      readJson<BackendAllowedActions>(await fetch(routes.actions(id)), `Failed to fetch allowed actions for ${id}`),
+    ]);
+
+    return applyBackendDetail(mapBackendWorkItem(detail.work_item), {
+      observations: detail.observations,
+      evidence,
+      publications: publications.publications.length ? publications.publications : detail.publications,
+      transitions: transitions.transitions,
+      allowedActions: actions.actions,
+    });
   },
 
   async getObservations(isMockMode: boolean): Promise<Observation[]> {
@@ -215,7 +216,7 @@ export const apiClient = {
     return data.transitions;
   },
 
-  async getPublications(id: string, isMockMode: boolean): Promise<Array<Record<string, unknown>>> {
+  async getPublications(id: string, isMockMode: boolean): Promise<BackendPublication[]> {
     if (isMockMode) return [];
     const data = await readJson<BackendPublicationListResponse>(await fetch(routes.publications(id)), `Failed to fetch publications for ${id}`);
     return data.publications;
@@ -244,8 +245,7 @@ export const apiClient = {
   async approveWorkItem(id: string, isMockMode: boolean): Promise<boolean> {
     if (isMockMode) return true;
     const res = await fetch(routes.review(id), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildReviewPayload('approve', REVIEW_ACTOR, 'Approved in Work Intelligence Web')),
     });
     await readJson<Record<string, unknown>>(res, 'Failed to approve work item');
@@ -255,8 +255,7 @@ export const apiClient = {
   async rejectWorkItem(id: string, reason: string, isMockMode: boolean): Promise<boolean> {
     if (isMockMode) return true;
     const res = await fetch(routes.review(id), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(buildReviewPayload('reject', REVIEW_ACTOR, reason)),
     });
     await readJson<Record<string, unknown>>(res, 'Failed to reject work item');
