@@ -84,6 +84,10 @@ export function buildObservationPayload(tenantId: string, input: ObservationInge
   };
 }
 
+export function selectObservationDetailItems<T>(items: T[], limit = 8): T[] {
+  return items.slice(0, Math.max(0, limit));
+}
+
 function mapStatus(status: string): WorkItemStatus {
   switch (status.toUpperCase()) {
     case 'OPEN': return 'needs_review';
