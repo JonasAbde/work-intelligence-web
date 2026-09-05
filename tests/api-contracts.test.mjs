@@ -101,7 +101,13 @@ test('approval maps to approved and never to published', () => {
   assert.equal(reviewUiStatus('reject'), 'rejected');
 });
 
-test('local canonical mutations are preview-only', () => {
-  assert.equal(shouldUseLocalPreviewMutations(false), false);
-  assert.equal(shouldUseLocalPreviewMutations(true), true);
+test('backend outage/mock fallback cannot enable canonical mutations', () => {
+  assert.equal(shouldUseLocalPreviewMutations(false, ''), false);
+  assert.equal(shouldUseLocalPreviewMutations(true, ''), false);
+  assert.equal(shouldUseLocalPreviewMutations(true, '?foo=bar'), false);
+});
+
+test('local mutations require explicit preview=1 and mock state', () => {
+  assert.equal(shouldUseLocalPreviewMutations(true, '?preview=1'), true);
+  assert.equal(shouldUseLocalPreviewMutations(false, '?preview=1'), false);
 });
