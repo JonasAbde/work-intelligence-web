@@ -1,4 +1,14 @@
-import type { Observation, Priority, ReviewQueueItem, SourceType, SystemMetrics, WorkItem, WorkItemStatus } from '../types/index.ts';
+import type {
+  EvidenceItem,
+  Observation,
+  Priority,
+  PublicationTarget,
+  ReviewQueueItem,
+  SourceType,
+  SystemMetrics,
+  WorkItem,
+  WorkItemStatus,
+} from '../types/index.ts';
 
 export interface BackendWorkItem {
   id: string;
@@ -28,6 +38,42 @@ export interface BackendObservation {
   occurred_at: string | null;
   created_at: string | null;
   metadata?: Record<string, unknown>;
+}
+
+export interface BackendPublication {
+  id: string;
+  work_item_id: string;
+  destination: string;
+  external_id: string | null;
+  response: Record<string, unknown>;
+  published_at: string;
+}
+
+export interface BackendEvidenceRecord {
+  kind: string;
+  observation_id: string;
+  source: string;
+  external_id: string | null;
+  actor: string | null;
+  occurred_at: string | null;
+  text_sha256: string;
+}
+
+export interface BackendEvidenceEnvelope {
+  schema: string;
+  bundle_id: string;
+  provider_id: string;
+  created_at: string;
+  identity_chain: {
+    tenant_id: string;
+    work_item_id: string;
+    canonical_key: string;
+    title: string;
+  };
+  records: BackendEvidenceRecord[];
+  observations_count: number;
+  algorithm: string;
+  digest: string;
 }
 
 export interface BackendMetrics {
@@ -79,6 +125,14 @@ export interface ObservationIngestInput {
   owner_hint?: string;
   due_hint?: string;
   priority_hint?: 'low' | 'medium' | 'high' | 'critical';
+}
+
+export interface BackendDetailProjection {
+  observations: BackendObservation[];
+  evidence: BackendEvidenceEnvelope | null;
+  publications: BackendPublication[];
+  transitions: BackendTransition[];
+  allowedActions: string[];
 }
 
 function encode(value: string): string {
@@ -156,6 +210,16 @@ function actorParts(actor: string | null): { name: string; email: string } {
   return { name: actor, email: '' };
 }
 
+function evidenceType(source: string): EvidenceItem['type'] {
+  switch (mapSource(source)) {
+    case 'gmail': return 'email_thread';
+    case 'calendar': return 'calendar_event';
+    case 'code': return 'git_commit';
+    case 'renos': return 'system_alert';
+    default: return 'document';
+  }
+}
+
 export function mapBackendWorkItem(item: BackendWorkItem): WorkItem {
   const status = mapStatus(item.status);
   const owner = item.owner ?? '';
@@ -177,7 +241,7 @@ export function mapBackendWorkItem(item: BackendWorkItem): WorkItem {
       inferredIntent: item.next_action,
     },
     resolution: {
-      decisionType: 'autonomous_created',
+      decisionType: 'backend_resolved',
       details: `Canonical key ${item.canonical_key}; ${item.observation_count} supporting observation(s).`,
     },
     policies: [],
@@ -185,6 +249,7 @@ export function mapBackendWorkItem(item: BackendWorkItem): WorkItem {
     publications: [],
     activity: [],
     sourceObservationIds: [],
+    allowedActions: undefined,
     reviewCategory: status === 'needs_review' ? 'high_confidence' : undefined,
   };
 }
@@ -206,6 +271,47 @@ export function mapBackendObservation(observation: BackendObservation, linkedWor
       externalId: observation.external_id ?? observation.id,
       checksum: '',
     },
+  };
+}
+
+export function applyBackendDetail(workItem: WorkItem, detail: BackendDetailProjection): WorkItem {
+  const evidence: EvidenceItem[] = detail.evidence?.records.map(record => ({
+    id: `${detail.evidence?.bundle_id}:${record.observation_id}`,
+    type: evidenceType(record.source),
+    title: `${record.source} observation ${record.observation_id}`,
+    snippet: record.external_id ? `External source id: ${record.external_id}` : 'Backend evidence record',
+    timestamp: record.occurred_at || detail.evidence?.created_at || workItem.updatedAt,
+    author: record.actor || 'Unknown source',
+    hash: `sha256:${record.text_sha256}`,
+    confidenceContribution: 0,
+  })) ?? [];
+
+  const publications: PublicationTarget[] = detail.publications.map(publication => ({
+    id: publication.id,
+    target: publication.destination,
+    status: 'published',
+    externalReference: publication.external_id ?? undefined,
+    syncedAt: publication.published_at,
+  }));
+
+  const sourceObservationIds = detail.observations.map(observation => observation.id);
+  const triggerObservationId = sourceObservationIds[0] ?? workItem.whyExists.triggerObservationId;
+
+  return {
+    ...workItem,
+    whyExists: { ...workItem.whyExists, triggerObservationId },
+    sourceObservationIds,
+    evidence,
+    publications,
+    activity: detail.transitions.map(transition => ({
+      id: transition.id,
+      timestamp: transition.created_at || workItem.updatedAt,
+      actor: transition.actor,
+      isSystem: false,
+      action: transition.action,
+      detail: transition.reason || `${transition.from_status} → ${transition.to_status}`,
+    })),
+    allowedActions: [...detail.allowedActions],
   };
 }
 
