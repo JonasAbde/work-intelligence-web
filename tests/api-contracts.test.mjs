@@ -91,11 +91,20 @@ test('review queue is derived only from backend-open items', () => {
   assert.equal(queue[0].workItem.id, 'wi_open');
 });
 
-test('metrics mapping uses real backend counters without fabricating latency or policy scores', () => {
-  const result = mapBackendMetrics({ total_ingested: 10, total_candidates: 4, total_approved: 2, total_published: 1, total_rejected: 1, total_cancelled: 0, total_snoozed: 0, total_promoted: 1, by_status: {}, by_source: {} }, 3);
+test('metrics mapping matches the durable V2 MetricsRecorder snapshot without inventing unsupported KPIs', () => {
+  const result = mapBackendMetrics({
+    count_by_action: { replayed: 1, created: 4, merged: 2, observed: 3 },
+    count_by_source: { email: 5, conversation: 5 },
+    count_by_tenant: { 'tenant-a': 10 },
+    open_work_items: { 'tenant-a': 3 },
+    total_observations: 10,
+    total_work_items: 4,
+  }, 3);
   assert.equal(result.activeObservationsToday, 10);
   assert.equal(result.workItemsDiscoveredToday, 4);
   assert.equal(result.pendingReviewCount, 3);
+  assert.equal(result.autonomousResolutionRate, 0);
+  assert.equal(result.humanInterventionRatio, 0);
   assert.equal(result.meanInferenceLatencyMs, 0);
   assert.equal(result.policyAlignmentScore, 0);
 });
