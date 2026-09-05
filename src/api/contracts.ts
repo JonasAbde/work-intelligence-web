@@ -25,9 +25,9 @@ export interface BackendObservation {
   text: string;
   external_id: string | null;
   actor: string | null;
-  occurred_at: string;
-  created_at: string;
-  metadata: Record<string, unknown>;
+  occurred_at: string | null;
+  created_at: string | null;
+  metadata?: Record<string, unknown>;
 }
 
 export interface BackendMetrics {
@@ -37,6 +37,40 @@ export interface BackendMetrics {
   open_work_items?: Record<string, number>;
   total_observations?: number;
   total_work_items?: number;
+}
+
+export interface BackendReadiness {
+  status: 'pass' | 'fail' | string;
+  checks: {
+    database?: boolean;
+    policy_store?: boolean;
+    publisher?: boolean;
+    [key: string]: boolean | undefined;
+  };
+  timestamp: string;
+}
+
+export interface BackendUsage {
+  total_requests: number;
+  total_errors: number;
+  by_path: Record<string, number>;
+  by_status: Record<string, number>;
+}
+
+export interface BackendTransition {
+  id: string;
+  from_status: string;
+  to_status: string;
+  action: string;
+  actor: string;
+  reason: string;
+  created_at: string | null;
+}
+
+export interface BackendAllowedActions {
+  work_item_id: string;
+  status: string;
+  actions: string[];
 }
 
 export interface ObservationIngestInput {
@@ -60,13 +94,27 @@ export function buildRoutes(baseUrl: string, tenantId: string) {
   const tenant = encode(tenantId);
   return {
     health: `${baseUrl}/healthz`,
+    detailedHealth: `${baseUrl}/healthz/detailed`,
     observations: `${baseUrl}/v1/observations`,
-    workItems: (limit = 100) => `${baseUrl}/v1/work-items?tenant_id=${tenant}&limit=${limit}`,
+    observationList: (limit = 100, source?: string) => {
+      const sourceQuery = source ? `&source=${encode(source)}` : '';
+      return `${baseUrl}/v1/observations?tenant_id=${tenant}&limit=${limit}${sourceQuery}`;
+    },
+    workItems: (limit = 100, status?: string, priority?: string) => {
+      const statusQuery = status ? `&status=${encode(status)}` : '';
+      const priorityQuery = priority ? `&priority=${encode(priority)}` : '';
+      return `${baseUrl}/v1/work-items?tenant_id=${tenant}&limit=${limit}${statusQuery}${priorityQuery}`;
+    },
     workItem: (id: string) => `${baseUrl}/v1/work-items/${encode(id)}?tenant_id=${tenant}`,
     review: (id: string) => `${baseUrl}/v1/work-items/${encode(id)}/review?tenant_id=${tenant}`,
     publish: (id: string) => `${baseUrl}/v1/work-items/${encode(id)}/publish?tenant_id=${tenant}`,
     promote: (id: string) => `${baseUrl}/v1/work-items/${encode(id)}/promote?tenant_id=${tenant}`,
     evidence: (id: string) => `${baseUrl}/v1/work-items/${encode(id)}/evidence?tenant_id=${tenant}`,
+    transitions: (id: string) => `${baseUrl}/v1/work-items/${encode(id)}/transitions?tenant_id=${tenant}`,
+    publications: (id: string) => `${baseUrl}/v1/work-items/${encode(id)}/publications?tenant_id=${tenant}`,
+    actions: (id: string) => `${baseUrl}/v1/work-items/${encode(id)}/actions?tenant_id=${tenant}`,
+    readiness: `${baseUrl}/v1/readiness`,
+    usage: `${baseUrl}/v1/usage`,
     metrics: `${baseUrl}/v1/metrics`,
     monitoring: `${baseUrl}/v1/monitoring`,
     version: `${baseUrl}/v1/version`,
@@ -78,10 +126,6 @@ export function buildObservationPayload(tenantId: string, input: ObservationInge
     tenant_id: tenantId,
     ...input,
   };
-}
-
-export function selectObservationDetailItems<T>(items: T[], limit = 8): T[] {
-  return items.slice(0, Math.max(0, limit));
 }
 
 function mapStatus(status: string): WorkItemStatus {
@@ -170,7 +214,7 @@ export function mapBackendObservation(observation: BackendObservation, linkedWor
     id: observation.id,
     source: mapSource(observation.source),
     actor,
-    timestamp: observation.occurred_at || observation.created_at,
+    timestamp: observation.occurred_at || observation.created_at || new Date(0).toISOString(),
     rawText: observation.text,
     inferredAction: '',
     confidence: 0,
@@ -206,8 +250,6 @@ export function deriveReviewQueue(items: WorkItem[]): ReviewQueueItem[] {
 }
 
 export function mapBackendMetrics(metrics: BackendMetrics, pendingReviewCount: number): SystemMetrics {
-  // V2 currently exposes durable cumulative counts only. The UI model still contains
-  // historical KPI slots for rates/latency; keep those at 0 rather than fabricating them.
   return {
     autonomousResolutionRate: 0,
     humanInterventionRatio: 0,
