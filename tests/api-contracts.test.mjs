@@ -8,12 +8,14 @@ import {
   buildReviewPayload,
   deriveReviewQueue,
   reviewUiStatus,
+  shouldUseLocalPreviewMutations,
 } from '../src/api/contracts.ts';
 
 const routes = buildRoutes('/api', 'tenant-a');
 
 test('routes match authoritative Work Intelligence V2 API', () => {
   assert.equal(routes.health, '/api/healthz');
+  assert.equal(routes.observations, '/api/v1/observations');
   assert.equal(routes.workItems(100), '/api/v1/work-items?tenant_id=tenant-a&limit=100');
   assert.equal(routes.workItem('wi_123'), '/api/v1/work-items/wi_123?tenant_id=tenant-a');
   assert.equal(routes.review('wi_123'), '/api/v1/work-items/wi_123/review?tenant_id=tenant-a');
@@ -74,4 +76,9 @@ test('metrics mapping uses real backend counters without fabricating latency or 
 test('approval changes UI to approved, never published', () => {
   assert.equal(reviewUiStatus('approve'), 'approved');
   assert.equal(reviewUiStatus('reject'), 'rejected');
+});
+
+test('live mode never performs local-only canonical mutations', () => {
+  assert.equal(shouldUseLocalPreviewMutations(false), false);
+  assert.equal(shouldUseLocalPreviewMutations(true), true);
 });
