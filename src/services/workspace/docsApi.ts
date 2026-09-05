@@ -1,122 +1,130 @@
 import { DocDocumentItem } from '../../runtime/runtimeTypes';
+import { isExplicitPreviewMode } from '../../runtime/runtimeMode';
 import { getAccessToken } from './googleAuth';
 import { loadPersistedState, savePersistedState, STORAGE_KEYS } from '../../runtime/persistence';
 
-const defaultDocs: DocDocumentItem[] = [
+const previewDocs: DocDocumentItem[] = [
   {
-    id: 'doc_arch_spec_01',
-    title: 'Q3 Aftergraph Operational Architecture Spec',
-    author: 'Alex Chen (Staff Engineer)',
-    lastModified: new Date(Date.now() - 3600000 * 3).toISOString(),
-    wordCount: 1420,
-    webViewLink: 'https://docs.google.com/document/d/doc_arch_spec_01/edit',
-    sections: [
-      {
-        heading: '1. Executive Overview & Autonomous Boundary',
-        body: 'The Aftergraph operational intelligence subsystem continuously digests disparate telemetry from email threads, meetings, commits, and system metrics. Its core mission is transforming ambiguous conversational artifacts into verified, policy-bounded work candidates with full provenance verification.'
-      },
-      {
-        heading: '2. Five Questions Supervisory Decision Model',
-        body: 'Every proposal presented to human supervisors must answer five immutable supervisory requirements: What is being proposed? Why does it exist? What changes if approved? What is the blast radius risk? What immutable evidence supports it?'
-      },
-      {
-        heading: '3. Google Workspace Ecosystem Integration',
-        body: 'Native bidirectional integration with Google Drive (artifacts & evidence storage), Gmail (intent observation & communication dispatch), Google Calendar (schedule conflict resolution), Google Sheets (metric tracking), Google Docs (spec synchronization), and Google Keep (checklist capture).'
-      }
-    ]
+    id: 'preview_doc_1',
+    title: 'Preview operational specification',
+    author: 'Preview User',
+    lastModified: new Date().toISOString(),
+    wordCount: 12,
+    webViewLink: 'https://docs.google.com',
+    sections: [{
+      heading: 'Preview',
+      body: 'Explicit preview content. This document is not loaded from Google Docs.',
+    }],
   },
-  {
-    id: 'doc_key_rotation_02',
-    title: 'Audit Signoff: Production KMS Root Key Rotation',
-    author: 'SecOps Automated Compliance Engine',
-    lastModified: new Date(Date.now() - 1000 * 60 * 40).toISOString(),
-    wordCount: 680,
-    webViewLink: 'https://docs.google.com/document/d/doc_key_rotation_02/edit',
-    sections: [
-      {
-        heading: 'Scope & Authorization',
-        body: 'Rotation of AWS KMS root CMK and GCP Cloud KMS keyring for production transactional datastores. Staged by Aftergraph Autonomous Agent under rule SEC-8902.'
-      },
-      {
-        heading: 'Canary Verification Results',
-        body: 'Zero failed handshakes recorded over 300s observation window. P99 latency unaffected at 18ms.'
-      }
-    ]
-  }
 ];
 
-let localDocs: DocDocumentItem[] = loadPersistedState(STORAGE_KEYS.DOCS_ITEMS, defaultDocs);
+let localDocs: DocDocumentItem[] = loadPersistedState(STORAGE_KEYS.DOCS_ITEMS, previewDocs);
 
-const persistDocs = () => {
+function persistPreviewDocs() {
   savePersistedState(STORAGE_KEYS.DOCS_ITEMS, localDocs);
-};
+}
+
+async function requireToken(): Promise<string> {
+  const token = await getAccessToken();
+  if (!token) throw new Error('Google Docs authorization required.');
+  return token;
+}
+
+function documentText(document: any): string {
+  const parts: string[] = [];
+  for (const element of document.body?.content ?? []) {
+    for (const paragraphElement of element.paragraph?.elements ?? []) {
+      const text = paragraphElement.textRun?.content;
+      if (typeof text === 'string') parts.push(text);
+    }
+  }
+  return parts.join('').trim();
+}
 
 export const fetchDocs = async (): Promise<DocDocumentItem[]> => {
-  return [...localDocs];
+  if (isExplicitPreviewMode()) return [...localDocs];
+
+  const token = await requireToken();
+  const params = new URLSearchParams({
+    pageSize: '10',
+    orderBy: 'modifiedTime desc',
+    q: "mimeType = 'application/vnd.google-apps.document' and trashed = false",
+    fields: 'files(id,name,modifiedTime,webViewLink,owners)',
+  });
+  const listRes = await fetch(`https://www.googleapis.com/drive/v3/files?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!listRes.ok) throw new Error(`Google Docs listing failed via Drive (${listRes.status}).`);
+
+  const listData = await listRes.json() as { files?: any[] };
+  return Promise.all((listData.files ?? []).map(async file => {
+    const docRes = await fetch(`https://docs.googleapis.com/v1/documents/${encodeURIComponent(file.id)}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!docRes.ok) throw new Error(`Google Docs fetch failed (${docRes.status}).`);
+    const document = await docRes.json();
+    const text = documentText(document);
+    return {
+      id: file.id,
+      title: document.title || file.name || '(Untitled document)',
+      author: file.owners?.[0]?.displayName || 'Google Docs user',
+      lastModified: file.modifiedTime || new Date().toISOString(),
+      wordCount: text ? text.split(/\s+/).filter(Boolean).length : 0,
+      webViewLink: file.webViewLink || `https://docs.google.com/document/d/${file.id}/edit`,
+      sections: text ? [{ heading: 'Document body', body: text }] : [],
+    } satisfies DocDocumentItem;
+  }));
 };
 
 export const createGoogleDoc = async (title: string, initialBody: string): Promise<DocDocumentItem> => {
-  const token = await getAccessToken();
-  if (token) {
-    try {
-      const res = await fetch('https://docs.googleapis.com/v1/documents', {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ title }),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        // Insert text
-        if (initialBody) {
-          await fetch(`https://docs.googleapis.com/v1/documents/${data.documentId}:batchUpdate`, {
-            method: 'POST',
-            headers: {
-              Authorization: `Bearer ${token}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              requests: [
-                {
-                  insertText: {
-                    location: { index: 1 },
-                    text: `${title}\n\n${initialBody}\n`,
-                  },
-                },
-              ],
-            }),
-          });
-        }
-        const newDoc: DocDocumentItem = {
-          id: data.documentId,
-          title: data.title || title,
-          author: 'Current User',
-          lastModified: new Date().toISOString(),
-          wordCount: initialBody.split(/\s+/).length,
-          webViewLink: `https://docs.google.com/document/d/${data.documentId}/edit`,
-          sections: [{ heading: 'Generated Content', body: initialBody }],
-        };
-        localDocs.unshift(newDoc);
-        persistDocs();
-        return newDoc;
-      }
-    } catch (err) {
-      console.warn('Live Docs create error:', err);
-    }
+  if (isExplicitPreviewMode()) {
+    const item: DocDocumentItem = {
+      id: `preview_doc_${Date.now()}`,
+      title,
+      author: 'Preview User',
+      lastModified: new Date().toISOString(),
+      wordCount: initialBody.trim() ? initialBody.trim().split(/\s+/).length : 0,
+      webViewLink: 'https://docs.google.com',
+      sections: [{ heading: 'Preview document body', body: initialBody }],
+    };
+    localDocs.unshift(item);
+    persistPreviewDocs();
+    return item;
   }
 
-  const localDoc: DocDocumentItem = {
-    id: `local_doc_${Date.now()}`,
-    title,
-    author: 'Current User',
+  const token = await requireToken();
+  const createRes = await fetch('https://docs.googleapis.com/v1/documents', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ title }),
+  });
+  if (!createRes.ok) throw new Error(`Google Docs create failed (${createRes.status}).`);
+
+  const created = await createRes.json();
+  if (initialBody) {
+    const updateRes = await fetch(`https://docs.googleapis.com/v1/documents/${encodeURIComponent(created.documentId)}:batchUpdate`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        requests: [{ insertText: { location: { index: 1 }, text: `${initialBody}\n` } }],
+      }),
+    });
+    if (!updateRes.ok) throw new Error(`Google Docs initial content write failed (${updateRes.status}).`);
+  }
+
+  return {
+    id: created.documentId,
+    title: created.title || title,
+    author: 'Current Google user',
     lastModified: new Date().toISOString(),
-    wordCount: initialBody.split(/\s+/).length,
-    webViewLink: 'https://docs.google.com',
-    sections: [{ heading: 'Document Body', body: initialBody }],
+    wordCount: initialBody.trim() ? initialBody.trim().split(/\s+/).length : 0,
+    webViewLink: `https://docs.google.com/document/d/${created.documentId}/edit`,
+    sections: initialBody ? [{ heading: 'Document body', body: initialBody }] : [],
   };
-  localDocs.unshift(localDoc);
-  persistDocs();
-  return localDoc;
 };
