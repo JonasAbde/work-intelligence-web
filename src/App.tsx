@@ -1,13 +1,14 @@
 import { useEffect, useState, useCallback } from 'react';
-import { 
-  WorkItem, 
-  Observation, 
-  ReviewQueueItem, 
-  IntegrationStatus, 
-  SystemMetrics, 
-  ConnectionState 
+import {
+  WorkItem,
+  Observation,
+  ReviewQueueItem,
+  IntegrationStatus,
+  SystemMetrics,
+  ConnectionState
 } from './types';
 import { apiClient, HealthCheckResult } from './api/client';
+import { shouldUseLocalPreviewMutations } from './api/contracts';
 import { Navigation, ViewTab } from './components/Navigation';
 import { Inspector } from './components/Inspector';
 import { CommandPalette } from './components/CommandPalette';
@@ -19,9 +20,9 @@ import { ActivityView } from './components/views/ActivityView';
 import { IntegrationsView } from './components/views/IntegrationsView';
 import { EvidenceGraphView } from './components/views/EvidenceGraphView';
 import { Toast, ToastMessage } from './components/ui/Toast';
-import { 
-  AppScenario, 
-  getScenarioData 
+import {
+  AppScenario,
+  getScenarioData
 } from './mock/fixtures';
 import { DensityProvider } from './runtime/primitives/DensityProvider';
 import { DriveSurface } from './components/workspace/DriveSurface';
@@ -42,13 +43,12 @@ export default function App() {
   const [isTelemetryOpen, setIsTelemetryOpen] = useState(false);
   const [density, setDensity] = useState<DensityMode>('comfortable');
   const [activeScenario, setActiveScenario] = useState<AppScenario>('normal_day');
-  
+
   const [connectionState, setConnectionState] = useState<ConnectionState>('connecting');
   const [healthResult, setHealthResult] = useState<HealthCheckResult | null>(null);
   const [isCheckingBackend, setIsCheckingBackend] = useState(false);
   const [isMockMode, setIsMockMode] = useState<boolean>(true);
 
-  // Initialize data with initial scenario
   const initialData = getScenarioData('normal_day');
   const [workItems, setWorkItems] = useState<WorkItem[]>(initialData.workItems);
   const [observations, setObservations] = useState<Observation[]>(initialData.observations);
@@ -61,11 +61,10 @@ export default function App() {
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState<boolean>(false);
   const [isConnectionModalOpen, setIsConnectionModalOpen] = useState<boolean>(false);
   const [evidenceTargetResource, setEvidenceTargetResource] = useState<WorkspaceResource | null>(null);
-
-  // Toast state with Undo support
   const [toast, setToast] = useState<ToastMessage | null>(null);
 
-  // Switch Scenario handler
+  const useLocalPreviewMutations = shouldUseLocalPreviewMutations(isMockMode);
+
   const handleScenarioChange = (newScenario: AppScenario) => {
     setActiveScenario(newScenario);
     const data = getScenarioData(newScenario);
@@ -76,23 +75,24 @@ export default function App() {
     setMetrics(data.metrics);
     setSelectedWorkItem(null);
     setIsInspectorOpen(false);
+    setIsMockMode(true);
+    setConnectionState('preview_mock');
 
     setToast({
       id: `scen-${Date.now()}`,
       title: `Switched to ${newScenario.replace('_', ' ').toUpperCase()}`,
-      description: 'Loaded test state matrix for complete UX evaluation.',
+      description: 'Loaded explicit preview data. Canonical backend state is unchanged.',
       duration: 3000
     });
   };
 
-  // Ping backend check
   const checkBackendHealth = useCallback(async () => {
     setIsCheckingBackend(true);
     try {
       const result = await apiClient.checkHealth();
       setHealthResult(result);
       setConnectionState(result.state);
-      
+
       if (result.state === 'connected') {
         setIsMockMode(false);
         const [items, obs, queue, integ, met] = await Promise.all([
@@ -122,7 +122,6 @@ export default function App() {
     checkBackendHealth();
   }, [checkBackendHealth]);
 
-  // Global hotkeys
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
@@ -138,92 +137,151 @@ export default function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isCommandPaletteOpen, isConnectionModalOpen, isInspectorOpen]);
 
-  // Approve action with full Undo support
-  const handleApproveWorkItem = async (id: string) => {
-    const targetItem = workItems.find(w => w.id === id);
-    const prevStatus = targetItem?.status || 'needs_review';
-    const removedReviewItem = reviewQueue.find(r => r.workItem.id === id);
-
-    // Optimistic update
-    setWorkItems(prev => prev.map(w => {
-      if (w.id === id) {
-        return {
-          ...w,
-          status: 'published',
-          publications: w.publications.map(p => ({ ...p, status: 'published' })),
-        };
-      }
-      return w;
-    }));
+  const applyApprovedState = (id: string) => {
+    setWorkItems(prev => prev.map(w => w.id === id ? { ...w, status: 'approved' } : w));
     setReviewQueue(prev => prev.filter(r => r.workItem.id !== id));
     if (selectedWorkItem?.id === id) {
-      setSelectedWorkItem(prev => prev ? { ...prev, status: 'published' } : null);
+      setSelectedWorkItem(prev => prev ? { ...prev, status: 'approved' } : null);
+    }
+  };
+
+  const handleApproveWorkItem = async (id: string) => {
+    const targetItem = workItems.find(w => w.id === id);
+    if (!targetItem) return;
+
+    if (useLocalPreviewMutations) {
+      const previousStatus = targetItem.status;
+      const removedReviewItem = reviewQueue.find(r => r.workItem.id === id);
+      applyApprovedState(id);
+      setToast({
+        id: `appr-${id}-${Date.now()}`,
+        title: 'Approved in preview',
+        description: 'Approval changes state to Approved. Publication remains a separate action.',
+        undoLabel: 'Undo',
+        duration: 6000,
+        onUndo: () => {
+          setWorkItems(prev => prev.map(w => w.id === id ? { ...w, status: previousStatus } : w));
+          if (removedReviewItem) setReviewQueue(prev => [removedReviewItem, ...prev]);
+          if (selectedWorkItem?.id === id) {
+            setSelectedWorkItem(prev => prev ? { ...prev, status: previousStatus } : null);
+          }
+        }
+      });
+      return;
     }
 
-    // Trigger toast with undo
-    setToast({
-      id: `appr-${id}-${Date.now()}`,
-      title: 'Approved',
-      description: `Dispatched to ${targetItem?.publications[0]?.target || 'RenOS'}`,
-      undoLabel: 'Undo',
-      duration: 6000,
-      onUndo: () => {
-        // Rollback optimistic update
-        setWorkItems(prev => prev.map(w => w.id === id ? { ...w, status: prevStatus } : w));
-        if (removedReviewItem) {
-          setReviewQueue(prev => [removedReviewItem, ...prev]);
-        }
-        if (selectedWorkItem?.id === id) {
-          setSelectedWorkItem(prev => prev ? { ...prev, status: prevStatus } : null);
-        }
-        setToast({
-          id: `undo-${Date.now()}`,
-          title: 'Action undone',
-          description: `Work item ${id} restored to review queue.`,
-          duration: 3000
-        });
-      }
-    });
-
     try {
-      await apiClient.approveWorkItem(id, isMockMode);
-    } catch {
-      // handled gracefully in preview mode
+      await apiClient.approveWorkItem(id, false);
+      applyApprovedState(id);
+      setToast({
+        id: `appr-${id}-${Date.now()}`,
+        title: 'Approved',
+        description: 'Backend state is Approved. Nothing has been published or executed.',
+        duration: 5000
+      });
+    } catch (error) {
+      setToast({
+        id: `appr-failed-${id}-${Date.now()}`,
+        title: 'Approval failed',
+        description: error instanceof Error ? error.message : 'The authoritative backend rejected the approval.',
+        duration: 6000
+      });
     }
   };
 
   const handleRejectWorkItem = async (id: string, reason: string) => {
-    setWorkItems(prev => prev.map(w => w.id === id ? { ...w, status: 'rejected' } : w));
-    setReviewQueue(prev => prev.filter(r => r.workItem.id !== id));
-    setIsInspectorOpen(false);
+    const applyRejectedState = () => {
+      setWorkItems(prev => prev.map(w => w.id === id ? { ...w, status: 'rejected' } : w));
+      setReviewQueue(prev => prev.filter(r => r.workItem.id !== id));
+      setIsInspectorOpen(false);
+    };
 
-    setToast({
-      id: `rej-${id}`,
-      title: 'Item archived',
-      description: `Archived with reason: ${reason}`,
-      duration: 4000
-    });
+    if (useLocalPreviewMutations) {
+      applyRejectedState();
+      setToast({
+        id: `rej-${id}`,
+        title: 'Rejected in preview',
+        description: reason || 'Preview item rejected.',
+        duration: 4000
+      });
+      return;
+    }
 
     try {
-      await apiClient.rejectWorkItem(id, reason, isMockMode);
-    } catch {
-      // handled gracefully
+      await apiClient.rejectWorkItem(id, reason, false);
+      applyRejectedState();
+      setToast({
+        id: `rej-${id}`,
+        title: 'Rejected',
+        description: reason || 'Backend state changed to Rejected.',
+        duration: 4000
+      });
+    } catch (error) {
+      setToast({
+        id: `rej-failed-${id}-${Date.now()}`,
+        title: 'Rejection failed',
+        description: error instanceof Error ? error.message : 'The authoritative backend rejected the request.',
+        duration: 6000
+      });
     }
   };
 
   const handleReconnectIntegration = (integrationId: string) => {
+    if (!useLocalPreviewMutations) {
+      setToast({
+        id: `rec-unavailable-${integrationId}`,
+        title: 'Integration control unavailable',
+        description: 'Work Intelligence V2 does not expose an integration reconnect endpoint yet. No state was fabricated locally.',
+        duration: 6000
+      });
+      return;
+    }
+
     setIntegrations(prev => prev.map(i => i.id === integrationId ? { ...i, status: 'operational' as const } : i));
     setToast({
       id: `rec-${integrationId}`,
-      title: 'Integration restored',
-      description: 'Incoming communication stream is now active.',
+      title: 'Integration restored in preview',
+      description: 'Preview fixture updated. No backend integration was changed.',
       duration: 4000
     });
   };
 
-  // Promote an extracted Gmail intent into a verified Work Item
-  const handlePromoteGmailToWorkItem = (msg: GmailMessageItem) => {
+  const handlePromoteGmailToWorkItem = async (msg: GmailMessageItem) => {
     const candidate = msg.extractedWorkItemCandidate;
+
+    if (!useLocalPreviewMutations) {
+      try {
+        await apiClient.ingestObservation({
+          source: 'email',
+          text: `${msg.subject}\n\n${msg.snippet}${candidate?.suggestedAction ? `\n\nSuggested action: ${candidate.suggestedAction}` : ''}`,
+          external_id: `gmail:${msg.id}`,
+          actor: msg.from,
+          metadata: {
+            provider: 'gmail',
+            subject: msg.subject,
+            source_date: msg.date,
+          },
+          title_hint: candidate?.suggestedTitle || msg.subject,
+          priority_hint: 'high',
+        }, false);
+        await checkBackendHealth();
+        setToast({
+          id: `gmail-ingest-${msg.id}-${Date.now()}`,
+          title: 'Sent to Work Intelligence',
+          description: 'The Gmail signal was ingested by the authoritative backend and the canonical view was refreshed.',
+          duration: 5000
+        });
+      } catch (error) {
+        setToast({
+          id: `gmail-ingest-failed-${msg.id}-${Date.now()}`,
+          title: 'Ingest failed',
+          description: error instanceof Error ? error.message : 'The Gmail signal could not be ingested.',
+          duration: 6000
+        });
+      }
+      return;
+    }
+
     const newId = `WI-GMAIL-${Date.now().toString().slice(-4)}`;
     const nowIso = new Date().toISOString();
     const newWorkItem: WorkItem = {
@@ -242,86 +300,77 @@ export default function App() {
       confidence: candidate ? candidate.confidence : 0.88,
       whyExists: {
         inferenceSummary: candidate ? candidate.reasoning : 'Ingested from incoming email communication',
-        model: 'gemini-2.5-flash-autonomous',
+        model: 'preview-fixture',
         triggerObservationId: `obs-gmail-${msg.id}`,
         inferredIntent: 'Resolve inbound request and generate delivery spec',
       },
       resolution: {
         decisionType: 'autonomous_created',
-        details: 'Promoted directly from Gmail operational stream with cryptographic email evidence.',
+        details: 'Preview-only WorkItem generated from Gmail fixture.',
       },
-      policies: [
-        {
-          id: `pol-${Date.now()}`,
-          code: 'RULE-COMMS-AUTO-INGEST',
-          name: 'Comms Ingest Policy',
-          status: 'requires_human_signoff',
-          reason: 'External stakeholder request requires human verification before dispatching.',
-          appliedAt: nowIso,
-        }
-      ],
-      evidence: [
-        {
-          id: `ev-${Date.now()}`,
-          type: 'email_thread',
-          title: msg.subject,
-          snippet: msg.snippet,
-          timestamp: msg.date,
-          author: `${msg.fromName} (${msg.from})`,
-          sourceUri: 'https://mail.google.com',
-          hash: `sha256:gmail_${msg.id.slice(0, 16)}`,
-          confidenceContribution: candidate ? candidate.confidence : 0.88,
-        }
-      ],
-      publications: [
-        {
-          id: `pub-${Date.now()}`,
-          target: 'RenOS',
-          status: 'pending',
-        }
-      ],
-      activity: [
-        {
-          id: `act-${Date.now()}`,
-          timestamp: nowIso,
-          actor: 'Aftergraph Intelligence',
-          isSystem: true,
-          action: 'Extracted Work Item',
-          detail: `Parsed inbound email thread from ${msg.fromName}`,
-        }
-      ],
+      policies: [],
+      evidence: [],
+      publications: [],
+      activity: [],
       sourceObservationIds: [`obs-gmail-${msg.id}`],
       reviewCategory: 'high_confidence',
     };
 
     setWorkItems(prev => [newWorkItem, ...prev]);
-    setReviewQueue(prev => [
-      {
-        id: `rev-${newId}`,
-        workItem: newWorkItem,
-        category: 'high_confidence',
-        urgency: 'high',
-        reasoning: 'Inbound external communication requires review before triggering publication dispatch.',
-      },
-      ...prev
-    ]);
-
+    setReviewQueue(prev => [{
+      id: `rev-${newId}`,
+      workItem: newWorkItem,
+      category: 'high_confidence',
+      urgency: 'high',
+      reasoning: 'Preview-only Gmail candidate requires review.',
+    }, ...prev]);
     setToast({
       id: `prom-${newId}`,
-      title: 'Promoted to Work Item',
-      description: `Created ${newId} with cryptographic email evidence hash.`,
+      title: 'Preview WorkItem created',
+      description: `${newId} exists only in preview data.`,
       duration: 5000,
     });
   };
 
-  // Promote a Keep Note / Checklist into a verified Work Item
-  const handlePromoteKeepToWorkItem = (note: KeepNoteItem) => {
-    const newId = `WI-KEEP-${Date.now().toString().slice(-4)}`;
-    const nowIso = new Date().toISOString();
+  const handlePromoteKeepToWorkItem = async (note: KeepNoteItem) => {
     const description = note.isChecklist
       ? `Verify checklist items: ${note.checklistItems.map(i => i.text).join('; ')}`
       : note.content;
 
+    if (!useLocalPreviewMutations) {
+      try {
+        await apiClient.ingestObservation({
+          source: 'google_keep',
+          text: `${note.title}\n\n${description}`,
+          external_id: `keep:${note.id}`,
+          metadata: {
+            provider: 'keep',
+            is_checklist: note.isChecklist,
+            source_updated_at: note.updatedAt,
+          },
+          title_hint: note.title,
+          priority_hint: 'medium',
+        }, false);
+        await checkBackendHealth();
+        setToast({
+          id: `keep-ingest-${note.id}-${Date.now()}`,
+          title: 'Sent to Work Intelligence',
+          description: 'The Keep signal was ingested by the authoritative backend and the canonical view was refreshed.',
+          duration: 5000,
+        });
+      } catch (error) {
+        setToast({
+          id: `keep-ingest-failed-${note.id}-${Date.now()}`,
+          title: 'Ingest failed',
+          description: error instanceof Error ? error.message : 'The Keep signal could not be ingested.',
+          duration: 6000,
+        });
+      }
+      return;
+    }
+
+    const newId = `WI-KEEP-${Date.now().toString().slice(-4)}`;
+    const nowIso = new Date().toISOString();
     const newWorkItem: WorkItem = {
       id: newId,
       title: note.title,
@@ -329,89 +378,58 @@ export default function App() {
       status: 'needs_review',
       priority: 'medium',
       owner: {
-        name: 'Keep Sync Agent',
-        email: 'keep-sync@aftergraph.internal',
+        name: 'Keep Preview Agent',
+        email: 'preview@aftergraph.internal',
         isAutonomousAgent: true,
       },
       createdAt: nowIso,
       updatedAt: nowIso,
       confidence: 0.95,
       whyExists: {
-        inferenceSummary: `Captured from Google Keep checklist: ${note.title}`,
-        model: 'gemini-2.5-flash-autonomous',
+        inferenceSummary: `Captured from Google Keep preview checklist: ${note.title}`,
+        model: 'preview-fixture',
         triggerObservationId: `obs-keep-${note.id}`,
-        inferredIntent: 'Execute and verify checklist items before release gate signoff.',
+        inferredIntent: 'Review checklist items.',
       },
       resolution: {
         decisionType: 'policy_promoted',
-        details: 'Promoted from Google Keep note into supervisory review backlog.',
+        details: 'Preview-only WorkItem generated from Keep fixture.',
       },
-      policies: [
-        {
-          id: `pol-${Date.now()}`,
-          code: 'RULE-KEEP-SYNC',
-          name: 'Keep Operational Checklist Signoff',
-          status: 'requires_human_signoff',
-          reason: 'Checklist operational items require supervisory signoff.',
-          appliedAt: nowIso,
-        }
-      ],
-      evidence: [
-        {
-          id: `ev-keep-${Date.now()}`,
-          type: 'document',
-          title: note.title,
-          snippet: description.slice(0, 200),
-          timestamp: note.updatedAt,
-          author: 'Current User (Google Keep)',
-          sourceUri: 'https://keep.google.com',
-          hash: `sha256:keep_${note.id}`,
-          confidenceContribution: 0.95,
-        }
-      ],
-      publications: [
-        {
-          id: `pub-${Date.now()}`,
-          target: 'RenOS',
-          status: 'pending',
-        }
-      ],
-      activity: [
-        {
-          id: `act-${Date.now()}`,
-          timestamp: nowIso,
-          actor: 'Keep Ingestion Engine',
-          isSystem: true,
-          action: 'Promoted Checklist Note',
-          detail: `Converted note "${note.title}" into operational work item`,
-        }
-      ],
+      policies: [],
+      evidence: [],
+      publications: [],
+      activity: [],
       sourceObservationIds: [`obs-keep-${note.id}`],
       reviewCategory: 'high_confidence',
     };
 
     setWorkItems(prev => [newWorkItem, ...prev]);
-    setReviewQueue(prev => [
-      {
-        id: `rev-${newId}`,
-        workItem: newWorkItem,
-        category: 'high_confidence',
-        urgency: 'normal',
-        reasoning: 'Operational checklist item promoted from Google Keep for team signoff.',
-      },
-      ...prev
-    ]);
-
+    setReviewQueue(prev => [{
+      id: `rev-${newId}`,
+      workItem: newWorkItem,
+      category: 'high_confidence',
+      urgency: 'normal',
+      reasoning: 'Preview-only Keep candidate requires review.',
+    }, ...prev]);
     setToast({
       id: `prom-${newId}`,
-      title: 'Promoted Keep Note',
-      description: `Created Work Item ${newId} from checklist.`,
+      title: 'Preview WorkItem created',
+      description: `${newId} exists only in preview data.`,
       duration: 5000,
     });
   };
 
-  // Attach a Drive file as cryptographic evidence to the currently selected work item
   const handleAttachDriveToWorkItem = (file: DriveItem) => {
+    if (!useLocalPreviewMutations) {
+      setToast({
+        id: `att-live-gap-${Date.now()}`,
+        title: 'Evidence write unavailable',
+        description: 'Work Intelligence V2 does not expose an evidence-attachment write endpoint yet. No local evidence was fabricated.',
+        duration: 6000,
+      });
+      return;
+    }
+
     if (!selectedWorkItem) {
       setToast({
         id: `att-err-${Date.now()}`,
@@ -430,129 +448,122 @@ export default function App() {
       timestamp: file.modifiedTime,
       author: file.ownerName || 'Drive User',
       sourceUri: file.webViewLink || 'https://drive.google.com',
-      hash: `sha256:drive_${file.id}`,
+      hash: `preview:drive_${file.id}`,
       confidenceContribution: 0.99,
     };
 
-    setWorkItems(prev => prev.map(w => {
-      if (w.id === selectedWorkItem.id) {
-        return {
-          ...w,
-          evidence: [...w.evidence, newEvidence],
-        };
-      }
-      return w;
-    }));
-
-    setSelectedWorkItem(prev => prev ? {
-      ...prev,
-      evidence: [...prev.evidence, newEvidence]
-    } : null);
-
+    setWorkItems(prev => prev.map(w => w.id === selectedWorkItem.id ? { ...w, evidence: [...w.evidence, newEvidence] } : w));
+    setSelectedWorkItem(prev => prev ? { ...prev, evidence: [...prev.evidence, newEvidence] } : null);
     setToast({
       id: `att-${Date.now()}`,
-      title: 'Evidence Attached',
-      description: `Linked "${file.name}" to ${selectedWorkItem.id}.`,
+      title: 'Evidence attached in preview',
+      description: `Linked "${file.name}" to ${selectedWorkItem.id} in preview data only.`,
       duration: 4000,
     });
   };
 
-  // Unified Resource -> Work Item promotion
-  const handleCreateWorkItemFromResource = (resource: WorkspaceResource) => {
-    const newId = `WI-WS-${Date.now().toString().slice(-4)}`;
-    const nowIso = new Date().toISOString();
+  const handleCreateWorkItemFromResource = async (resource: WorkspaceResource) => {
     const summaryText = resource.summary || resource.subtitle || resource.title;
 
+    if (!useLocalPreviewMutations) {
+      const resourcePriority = resource.detectedWork?.priority;
+      const priorityHint = resourcePriority === 'urgent' ? 'critical' :
+        resourcePriority === 'high' ? 'high' : resourcePriority === 'low' ? 'low' : 'medium';
+      try {
+        await apiClient.ingestObservation({
+          source: `google_${resource.provider}`,
+          text: `${resource.title}\n\n${resource.detectedWork?.suggestedAction || summaryText}`,
+          external_id: `${resource.provider}:${resource.id}`,
+          actor: resource.actor?.email || resource.actor?.name,
+          metadata: {
+            provider: resource.provider,
+            kind: resource.kind,
+            provenance_uri: resource.provenanceUri,
+            source_modified_at: resource.modifiedAt,
+          },
+          title_hint: resource.detectedWork?.suggestedTitle || resource.title,
+          priority_hint: priorityHint,
+        }, false);
+        await checkBackendHealth();
+        setToast({
+          id: `resource-ingest-${resource.id}-${Date.now()}`,
+          title: 'Sent to Work Intelligence',
+          description: 'The resource became an observation in the authoritative backend. Canonical work was refreshed from V2.',
+          duration: 5000,
+        });
+      } catch (error) {
+        setToast({
+          id: `resource-ingest-failed-${resource.id}-${Date.now()}`,
+          title: 'Ingest failed',
+          description: error instanceof Error ? error.message : 'The resource could not be ingested.',
+          duration: 6000,
+        });
+      }
+      return;
+    }
+
+    const newId = `WI-WS-${Date.now().toString().slice(-4)}`;
+    const nowIso = new Date().toISOString();
     const newWorkItem: WorkItem = {
       id: newId,
       title: resource.detectedWork?.suggestedTitle || resource.title,
-      description: resource.detectedWork?.suggestedAction || summaryText || `Operational work item from ${resource.provider.toUpperCase()} (${resource.kind})`,
+      description: resource.detectedWork?.suggestedAction || summaryText,
       status: 'needs_review',
       priority: resource.detectedWork?.priority || 'medium',
       owner: {
-        name: `${resource.provider.toUpperCase()} Ingestion Agent`,
-        email: `${resource.provider}-sync@aftergraph.internal`,
+        name: `${resource.provider.toUpperCase()} Preview Agent`,
+        email: 'preview@aftergraph.internal',
         isAutonomousAgent: true,
       },
       createdAt: nowIso,
       updatedAt: nowIso,
       confidence: resource.detectedWork?.confidence ?? 0.94,
       whyExists: {
-        inferenceSummary: `Captured from ${resource.provider.toUpperCase()} resource: ${resource.title}`,
-        model: 'gemini-2.5-flash-autonomous',
+        inferenceSummary: `Captured from preview ${resource.provider.toUpperCase()} resource: ${resource.title}`,
+        model: 'preview-fixture',
         triggerObservationId: `obs-${resource.provider}-${resource.id}`,
-        inferredIntent: resource.detectedWork?.reasoning || 'Operational resource promoted into supervisory review backlog.',
+        inferredIntent: resource.detectedWork?.reasoning || 'Preview resource candidate.',
       },
       resolution: {
         decisionType: 'policy_promoted',
-        details: `Promoted from ${resource.provider} ${resource.kind} into team action queue.`,
+        details: `Preview-only WorkItem generated from ${resource.provider} ${resource.kind}.`,
       },
-      policies: [
-        {
-          id: `pol-${Date.now()}`,
-          code: `RULE-${resource.provider.toUpperCase()}-SYNC`,
-          name: `${resource.provider.toUpperCase()} Resource Operational Signoff`,
-          status: 'requires_human_signoff',
-          reason: 'Cross-surface resource actions require human signoff.',
-          appliedAt: nowIso,
-        }
-      ],
-      evidence: [
-        {
-          id: `ev-${resource.provider}-${Date.now()}`,
-          type: 'document',
-          title: resource.title,
-          snippet: summaryText.slice(0, 240),
-          timestamp: resource.modifiedAt || nowIso,
-          author: resource.actor?.name || `${resource.provider} System`,
-          sourceUri: resource.provenanceUri || `https://${resource.provider}.google.com`,
-          hash: resource.evidenceHash || `sha256:${resource.provider}_${resource.id}`,
-          confidenceContribution: 0.98,
-        },
-      ],
-      publications: [
-        {
-          id: `pub-${Date.now()}`,
-          target: 'RenOS',
-          status: 'pending',
-        },
-      ],
-      activity: [
-        {
-          id: `act-${Date.now()}`,
-          timestamp: nowIso,
-          actor: `${resource.provider.toUpperCase()} Ingestion Runtime`,
-          isSystem: true,
-          action: 'Ingested & Promoted Resource',
-          detail: `Created work item from ${resource.kind} "${resource.title}"`,
-        },
-      ],
+      policies: [],
+      evidence: [],
+      publications: [],
+      activity: [],
       sourceObservationIds: [`obs-${resource.provider}-${resource.id}`],
       reviewCategory: 'high_confidence',
     };
 
     setWorkItems(prev => [newWorkItem, ...prev]);
-    setReviewQueue(prev => [
-      {
-        id: `rev-${newId}`,
-        workItem: newWorkItem,
-        category: 'high_confidence',
-        urgency: 'normal',
-        reasoning: resource.detectedWork?.reasoning || `Operational asset promoted from ${resource.provider} for team review.`,
-      },
-      ...prev,
-    ]);
-
+    setReviewQueue(prev => [{
+      id: `rev-${newId}`,
+      workItem: newWorkItem,
+      category: 'high_confidence',
+      urgency: 'normal',
+      reasoning: 'Preview-only resource candidate requires review.',
+    }, ...prev]);
     setSelectedWorkItem(newWorkItem);
     setToast({
       id: `prom-${newId}`,
-      title: 'Work Item Created',
-      description: `Created ${newId}: "${newWorkItem.title}".`,
+      title: 'Preview WorkItem created',
+      description: `${newId} exists only in preview data.`,
       duration: 4000,
     });
   };
 
   const handleAttachResourceToTarget = (targetItem: WorkItem, resource: WorkspaceResource) => {
+    if (!useLocalPreviewMutations) {
+      setToast({
+        id: `att-live-gap-${Date.now()}`,
+        title: 'Evidence write unavailable',
+        description: 'The current V2 API exposes evidence reads but not evidence attachment writes. No canonical state was changed.',
+        duration: 6000,
+      });
+      return;
+    }
+
     const summaryText = resource.summary || resource.subtitle || resource.title;
     const newEvidence = {
       id: `ev-${resource.provider}-${Date.now()}`,
@@ -562,33 +573,31 @@ export default function App() {
       timestamp: resource.modifiedAt || new Date().toISOString(),
       author: resource.actor?.name || `${resource.provider} User`,
       sourceUri: resource.provenanceUri || `https://${resource.provider}.google.com`,
-      hash: resource.evidenceHash || `sha256:${resource.provider}_${resource.id}`,
+      hash: `preview:${resource.provider}_${resource.id}`,
       confidenceContribution: 0.99,
     };
 
-    setWorkItems(prev => prev.map(w => {
-      if (w.id === targetItem.id) {
-        return {
-          ...w,
-          evidence: [...w.evidence, newEvidence],
-        };
-      }
-      return w;
-    }));
-
+    setWorkItems(prev => prev.map(w => w.id === targetItem.id ? { ...w, evidence: [...w.evidence, newEvidence] } : w));
     setSelectedWorkItem(targetItem);
     setIsInspectorOpen(true);
-
     setToast({
       id: `att-${Date.now()}`,
-      title: 'Evidence Anchored',
-      description: `Bound "${resource.title}" (${resource.provider.toUpperCase()}) to ${targetItem.id}.`,
+      title: 'Evidence anchored in preview',
+      description: `Bound "${resource.title}" to ${targetItem.id} in preview data only.`,
       duration: 4500,
     });
   };
 
-  // Unified Resource -> Evidence Attachment
   const handleAttachEvidenceFromResource = (resource: WorkspaceResource) => {
+    if (!useLocalPreviewMutations) {
+      setToast({
+        id: `att-live-gap-${Date.now()}`,
+        title: 'Evidence write unavailable',
+        description: 'Evidence attachment is disabled in live mode until V2 exposes an authoritative write contract.',
+        duration: 6000,
+      });
+      return;
+    }
     if (!selectedWorkItem) {
       setEvidenceTargetResource(resource);
       return;
@@ -599,14 +608,11 @@ export default function App() {
   return (
     <DensityProvider density={density} onDensityChange={setDensity}>
       <div className="flex h-screen w-screen overflow-hidden bg-[#090d16] text-slate-100 font-sans">
-        {/* 1. Left Navigation */}
         <Navigation
           activeTab={activeTab}
           onTabChange={(tab) => {
             setActiveTab(tab);
-            if (tab !== 'work') {
-              setIsInspectorOpen(false);
-            }
+            if (tab !== 'work') setIsInspectorOpen(false);
           }}
           reviewCount={reviewQueue.length}
           workCount={workItems.length}
@@ -621,12 +627,8 @@ export default function App() {
           onOpenTelemetry={() => setIsTelemetryOpen(true)}
         />
 
-        {/* 2. Main Center Workspace */}
         <div className="flex-1 flex flex-col min-w-0 h-screen overflow-hidden">
-          
-          {/* Dynamic Views */}
           <div className="flex-1 flex overflow-hidden">
-            
             {activeTab === 'home' && (
               <HomeView
                 workItems={workItems}
@@ -702,7 +704,6 @@ export default function App() {
               />
             )}
 
-            {/* Google Workspace Surfaces */}
             {activeTab === 'workspace_search' && (
               <UniversalSearchView
                 onSelectResource={(res) => {
@@ -719,14 +720,11 @@ export default function App() {
                 onCreateWorkItem={handleCreateWorkItemFromResource}
                 onAttachEvidence={handleAttachEvidenceFromResource}
                 onLinkWorkItem={(res) => {
-                  if (selectedWorkItem) {
-                    handleAttachEvidenceFromResource(res);
-                  } else {
-                    handleCreateWorkItemFromResource(res);
-                  }
+                  if (selectedWorkItem) handleAttachEvidenceFromResource(res);
+                  else handleCreateWorkItemFromResource(res);
                 }}
                 onBatchCreateWork={(resources) => {
-                  resources.forEach(res => handleCreateWorkItemFromResource(res));
+                  resources.forEach(res => void handleCreateWorkItemFromResource(res));
                 }}
                 onBatchAttachEvidence={(resources) => {
                   resources.forEach(res => handleAttachEvidenceFromResource(res));
@@ -742,12 +740,10 @@ export default function App() {
               />
             )}
 
-            {activeTab === 'component_registry' && (
-              <ComponentRegistryView />
-            )}
+            {activeTab === 'component_registry' && <ComponentRegistryView />}
 
             {activeTab === 'drive' && (
-              <DriveSurface 
+              <DriveSurface
                 onAttachToWorkItem={handleAttachDriveToWorkItem}
                 onCreateWorkItem={handleCreateWorkItemFromResource}
                 onAttachEvidence={handleAttachEvidenceFromResource}
@@ -764,7 +760,7 @@ export default function App() {
             )}
 
             {activeTab === 'gmail' && (
-              <GmailSurface 
+              <GmailSurface
                 onPromoteToWorkItem={handlePromoteGmailToWorkItem}
                 onCreateWorkItem={handleCreateWorkItemFromResource}
                 onAttachEvidence={handleAttachEvidenceFromResource}
@@ -805,7 +801,7 @@ export default function App() {
             )}
 
             {activeTab === 'sheets' && (
-              <SheetsSurface 
+              <SheetsSurface
                 onCreateWorkItem={handleCreateWorkItemFromResource}
                 onAttachEvidence={handleAttachEvidenceFromResource}
                 onLinkWorkItem={handleAttachEvidenceFromResource}
@@ -813,7 +809,7 @@ export default function App() {
             )}
 
             {activeTab === 'docs' && (
-              <DocsSurface 
+              <DocsSurface
                 onCreateWorkItem={handleCreateWorkItemFromResource}
                 onAttachEvidence={handleAttachEvidenceFromResource}
                 onLinkWorkItem={handleAttachEvidenceFromResource}
@@ -829,7 +825,7 @@ export default function App() {
             )}
 
             {activeTab === 'keep' && (
-              <KeepSurface 
+              <KeepSurface
                 onPromoteToWorkItem={handlePromoteKeepToWorkItem}
                 onCreateWorkItem={handleCreateWorkItemFromResource}
                 onAttachEvidence={handleAttachEvidenceFromResource}
@@ -845,7 +841,6 @@ export default function App() {
               />
             )}
 
-            {/* 3. Contextual Inspector (Dockable side panel with progressive disclosure) */}
             {isInspectorOpen && selectedWorkItem && (
               <Inspector
                 item={selectedWorkItem}
@@ -857,26 +852,19 @@ export default function App() {
           </div>
         </div>
 
-        {/* 4. Action Toast with Undo */}
-        <Toast
-          toast={toast}
-          onDismiss={() => setToast(null)}
-        />
+        <Toast toast={toast} onDismiss={() => setToast(null)} />
 
-        {/* 5. Command Palette (⌘K) */}
         <CommandPalette
           isOpen={isCommandPaletteOpen}
           onClose={() => setIsCommandPaletteOpen(false)}
-          onNavigate={(tab) => setActiveTab(tab as any)}
+          onNavigate={(tab) => setActiveTab(tab as ViewTab)}
           workItems={workItems}
           observations={observations}
           onSelectWorkItem={(item) => {
             setSelectedWorkItem(item);
             setIsInspectorOpen(true);
           }}
-          onSelectObservation={() => {
-            setActiveTab('activity');
-          }}
+          onSelectObservation={() => setActiveTab('activity')}
           onTriggerReviewNext={() => {
             if (reviewQueue.length > 0) {
               setSelectedWorkItem(reviewQueue[0].workItem);
@@ -886,7 +874,6 @@ export default function App() {
           onRetryConnection={checkBackendHealth}
         />
 
-        {/* 6. Connection State Diagnostics Modal */}
         <ConnectionModal
           isOpen={isConnectionModalOpen}
           onClose={() => setIsConnectionModalOpen(false)}
@@ -898,13 +885,8 @@ export default function App() {
           isChecking={isCheckingBackend}
         />
 
-        {/* 7. Live Telemetry & Performance HUD Modal */}
-        <TelemetryHUD
-          isOpen={isTelemetryOpen}
-          onClose={() => setIsTelemetryOpen(false)}
-        />
+        <TelemetryHUD isOpen={isTelemetryOpen} onClose={() => setIsTelemetryOpen(false)} />
 
-        {/* 8. Attach Evidence Target Selector Modal */}
         <AttachEvidenceModal
           isOpen={evidenceTargetResource !== null}
           onClose={() => setEvidenceTargetResource(null)}
@@ -915,7 +897,7 @@ export default function App() {
             setEvidenceTargetResource(null);
           }}
           onCreateNewWithEvidence={(res) => {
-            handleCreateWorkItemFromResource(res);
+            void handleCreateWorkItemFromResource(res);
             setEvidenceTargetResource(null);
           }}
         />
