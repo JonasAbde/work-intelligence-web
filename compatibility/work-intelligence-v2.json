@@ -1,0 +1,37 @@
+{
+  "schema": "aftergraph.web-backend-compatibility/1.0",
+  "backend": {
+    "repository": "Aftergraph/work-intelligence-v2",
+    "ref": "0b4de81cb568120cba87f106f1ce7ad962048197",
+    "branch": "master",
+    "port": 8087,
+    "api_version": "v1"
+  },
+  "frontend": {
+    "repository": "JonasAbde/work-intelligence-web",
+    "branch": "fix/production-hardening-takeover"
+  },
+  "required_contracts": [
+    "GET /healthz",
+    "POST /v1/observations",
+    "GET /v1/observations",
+    "GET /v1/work-items",
+    "GET /v1/work-items/{id}",
+    "POST /v1/work-items/{id}/review",
+    "GET /v1/work-items/{id}/evidence",
+    "GET /v1/work-items/{id}/transitions",
+    "GET /v1/work-items/{id}/publications",
+    "GET /v1/work-items/{id}/actions",
+    "GET /v1/readiness",
+    "GET /v1/usage",
+    "GET /v1/metrics",
+    "GET /v1/version"
+  ],
+  "invariants": [
+    "WorkItem != WORKS Work",
+    "UI state is not canonical backend state",
+    "backend failure never enables preview fixtures",
+    "approval never implies publication or execution",
+    "unsupported live writes fail closed"
+  ]
+}
