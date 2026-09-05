@@ -1,123 +1,92 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
-import { 
-  getAuth, 
-  signInWithPopup, 
-  GoogleAuthProvider, 
-  onAuthStateChanged, 
-  signOut, 
-  User 
+import {
+  getAuth,
+  signInWithPopup,
+  GoogleAuthProvider,
+  onAuthStateChanged,
+  signOut,
+  User,
 } from 'firebase/auth';
 import firebaseConfig from '../../../firebase-applet-config.json';
 
-// Re-use or initialize Firebase app
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 export const auth = getAuth(app);
 
-// Configure Google Provider with requested Workspace Scopes
+/**
+ * Browser OAuth is intentionally short-lived and memory-only.
+ * Long-lived refresh credentials, watches and webhooks belong behind a
+ * server-side connector boundary, never in browser storage.
+ */
 export const provider = new GoogleAuthProvider();
-provider.addScope('https://www.googleapis.com/auth/drive');
-provider.addScope('https://www.googleapis.com/auth/drive.file');
-provider.addScope('https://www.googleapis.com/auth/drive.readonly');
-provider.addScope('https://www.googleapis.com/auth/drive.metadata.readonly');
-provider.addScope('https://mail.google.com/');
-provider.addScope('https://www.googleapis.com/auth/gmail.readonly');
-provider.addScope('https://www.googleapis.com/auth/gmail.send');
-provider.addScope('https://www.googleapis.com/auth/gmail.compose');
-provider.addScope('https://www.googleapis.com/auth/gmail.modify');
-provider.addScope('https://www.googleapis.com/auth/calendar');
-provider.addScope('https://www.googleapis.com/auth/calendar.events');
-provider.addScope('https://www.googleapis.com/auth/calendar.readonly');
-provider.addScope('https://www.googleapis.com/auth/spreadsheets');
-provider.addScope('https://www.googleapis.com/auth/spreadsheets.readonly');
-provider.addScope('https://www.googleapis.com/auth/documents');
-provider.addScope('https://www.googleapis.com/auth/documents.readonly');
+[
+  'https://www.googleapis.com/auth/drive',
+  'https://www.googleapis.com/auth/gmail.modify',
+  'https://www.googleapis.com/auth/gmail.send',
+  'https://www.googleapis.com/auth/calendar.events',
+  'https://www.googleapis.com/auth/spreadsheets',
+  'https://www.googleapis.com/auth/documents',
+].forEach(scope => provider.addScope(scope));
+provider.setCustomParameters({ prompt: 'consent' });
 
-// Session token storage key (cleared automatically on tab close)
-const SESSION_TOKEN_KEY = 'aftergraph_ws_session_token_v1';
 let cachedAccessToken: string | null = null;
 let isSigningIn = false;
 
 export const isAuthSigningIn = (): boolean => isSigningIn;
-
-export const getStoredSessionToken = (): string | null => {
-  if (cachedAccessToken) return cachedAccessToken;
-  try {
-    const stored = sessionStorage.getItem(SESSION_TOKEN_KEY);
-    if (stored) {
-      cachedAccessToken = stored;
-      return stored;
-    }
-  } catch {
-    // Storage access may be blocked in some sandboxes
-  }
-  return null;
-};
-
-export const setStoredSessionToken = (token: string | null) => {
-  cachedAccessToken = token;
-  try {
-    if (token) {
-      sessionStorage.setItem(SESSION_TOKEN_KEY, token);
-    } else {
-      sessionStorage.removeItem(SESSION_TOKEN_KEY);
-    }
-  } catch {
-    // Storage access may be blocked
-  }
-};
+export const hasGoogleAccessToken = (): boolean => Boolean(cachedAccessToken);
 
 export const initAuth = (
   onAuthSuccess?: (user: User, token: string) => void,
-  onAuthFailure?: () => void
+  onAuthFailure?: () => void,
 ) => {
-  return onAuthStateChanged(auth, async (user: User | null) => {
-    if (user) {
-      const token = getStoredSessionToken();
-      if (token) {
-        if (onAuthSuccess) onAuthSuccess(user, token);
-      } else {
-        // User is authenticated in Firebase, but Google access token needs to be acquired
-        if (onAuthSuccess) onAuthSuccess(user, '');
-      }
-    } else {
-      setStoredSessionToken(null);
-      if (onAuthFailure) onAuthFailure();
+  return onAuthStateChanged(auth, (user: User | null) => {
+    if (user && cachedAccessToken) {
+      onAuthSuccess?.(user, cachedAccessToken);
+      return;
     }
+
+    // Firebase can restore its own auth session, but it cannot restore the
+    // Google provider access token we deliberately keep out of browser storage.
+    // Do not report Workspace as connected until a fresh provider token exists.
+    onAuthFailure?.();
   });
 };
 
-export const googleSignIn = async (): Promise<{ user: User; accessToken: string } | null> => {
+export const googleSignIn = async (): Promise<{ user: User; accessToken: string }> => {
+  if (isSigningIn) {
+    throw new Error('Google sign-in is already in progress.');
+  }
+
+  isSigningIn = true;
   try {
-    isSigningIn = true;
     const result = await signInWithPopup(auth, provider);
     const credential = GoogleAuthProvider.credentialFromResult(result);
-    const token = credential?.accessToken || '';
+    const token = credential?.accessToken;
     if (!token) {
-      throw new Error('Google did not return an access token. Please check OAuth credentials.');
+      throw new Error('Google did not return a Workspace access token.');
     }
-    setStoredSessionToken(token);
+
+    cachedAccessToken = token;
     return { user: result.user, accessToken: token };
-  } catch (error: any) {
-    console.error('Sign in error:', error);
-    throw error;
   } finally {
     isSigningIn = false;
   }
 };
 
-export const getAccessToken = async (): Promise<string | null> => {
-  return getStoredSessionToken();
-};
+export const getAccessToken = async (): Promise<string | null> => cachedAccessToken;
 
 export const logoutGoogle = async () => {
+  cachedAccessToken = null;
   await signOut(auth);
-  setStoredSessionToken(null);
 };
 
-export const getAppletOAuthClientId = () => {
-  return firebaseConfig.oAuthClientId;
-};
+export const getConfiguredWorkspaceScopes = (): string[] => [
+  'Drive',
+  'Gmail modify',
+  'Gmail send',
+  'Calendar events',
+  'Sheets',
+  'Docs',
+];
 
-export const getAppletApiKey = () => {
-  return firebaseConfig.apiKey;
-};
+export const getAppletOAuthClientId = () => firebaseConfig.oAuthClientId;
+export const getAppletApiKey = () => firebaseConfig.apiKey;
